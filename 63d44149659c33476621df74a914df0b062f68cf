@@ -1,0 +1,84 @@
+localstorage-extension/manifest.json
+  cb94dc07f64f50a4 1-28
+go.sum
+  cb94dc07f64f50a4 1-132
+studies_parser.go
+  cb94dc07f64f50a4 1-189
+main.go
+  e381b989704b93b8 1-4,6-7,10,13,15,20,22,25,30-31
+  cb94dc07f64f50a4 5,8-9,11-12,14,16-19,21,23-24,26-29
+models.go
+  cb94dc07f64f50a4 1-48
+auto_refresh.go
+  cb94dc07f64f50a4 1-464
+README.md
+  cb94dc07f64f50a4 2-52,56,59-60,62,64-67,69,73-77,80,82-83
+  e381b989704b93b8 1,53-55,57-58,61,63,68,70-72,78-79,81
+localstorage-extension/popup.html
+  cb94dc07f64f50a4 1-748
+go.mod
+  cb94dc07f64f50a4 3-40
+  e381b989704b93b8 1-2
+config.go
+  cb94dc07f64f50a4 1-14
+db.go
+  cb94dc07f64f50a4 1-110
+logging.go
+  cb94dc07f64f50a4 1-71
+studies_url.go
+  cb94dc07f64f50a4 1-29
+stream.go
+  cb94dc07f64f50a4 1-110
+QUICKSTART.md
+  e381b989704b93b8 2,4-6,8-9,11,15,17,19,25,27-28,34
+  cb94dc07f64f50a4 1,3,7,10,12-14,16,18,20-24,26,29-33
+service.go
+  cb94dc07f64f50a4 1-76
+stores.go
+  cb94dc07f64f50a4 1-545
+localstorage-extension/popup.js
+  cb94dc07f64f50a4 1-1173
+localstorage-extension/README.md
+  cb94dc07f64f50a4 1-33
+handlers.go
+  cb94dc07f64f50a4 1-578
+.gitignore
+  cb94dc07f64f50a4 3-6,36-38
+localstorage-extension/background.js
+  cb94dc07f64f50a4 1-1298
+http_helpers.go
+  cb94dc07f64f50a4 1-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.4",
+  "base_commit_sha": "63d44149659c33476621df74a914df0b062f68cf",
+  "prompts": {
+    "cb94dc07f64f50a4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019c93ae-37b8-7671-996a-aa8ed5741fde",
+        "model": "gpt-5.3-codex"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 5875,
+      "total_deletions": 1225,
+      "accepted_lines": 5870,
+      "overriden_lines": 0
+    },
+    "e381b989704b93b8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "72f505ba-d439-4a90-afba-c6927d6461c8",
+        "model": "claude-sonnet-4-5-20250929"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 5843,
+      "total_deletions": 15,
+      "accepted_lines": 4600,
+      "overriden_lines": 0
+    }
+  }
+}
