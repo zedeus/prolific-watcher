@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "LocalStorage Viewer",
+  "version": "1.1.0",
+  "description": "Automatically sync OIDC access_token from open Prolific tabs to a local Go service.",
+  "permissions": [
+    "scripting",
+    "tabs",
+    "alarms",
+    "storage",
+    "webRequest",
+    "webRequestBlocking",
+    "webRequestFilterResponse"
+  ],
+  "host_permissions": [
+    "*://*.prolific.com/*",
+    "http://localhost:8080/*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "action": {
+    "default_title": "LocalStorage Viewer",
+    "default_popup": "popup.html"
+  }
+}

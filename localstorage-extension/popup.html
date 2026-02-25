@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prolific Watcher</title>
+  <style>
+    :root {
+      --bg: #f3f5f8;
+      --surface: #ffffff;
+      --surface-2: #f8fafc;
+      --text: #101828;
+      --muted: #667085;
+      --line: #d0d7e2;
+      --line-2: #bcc7d6;
+      --good: #16a34a;
+      --bad: #e11d48;
+      --chip: #f2f4f7;
+      --chip-border: #d0d7e2;
+      --chip-text: #344054;
+      --accent: #111827;
+    }
+
+    body {
+      margin: 0;
+      width: 620px;
+      font-family: "IBM Plex Sans", "Segoe UI", "Trebuchet MS", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+
+    main {
+      padding: 8px;
+    }
+
+    .shell {
+      padding: 0;
+      background: transparent;
+      border: none;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 0 8px 0;
+      margin-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+      font-size: 12px;
+    }
+
+    .status-cluster {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      color: var(--muted);
+      white-space: nowrap;
+      font-weight: 600;
+    }
+
+    .refresh {
+      color: #475467;
+      white-space: nowrap;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      display: inline-block;
+      background: var(--good);
+      box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.25);
+      flex: 0 0 auto;
+    }
+
+    .dot.bad {
+      background: var(--bad);
+      box-shadow: 0 0 0 1px rgba(225, 29, 72, 0.25);
+    }
+
+    .tabs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: auto;
+    }
+
+    .tab {
+      border: 1px solid var(--line-2);
+      background: var(--surface);
+      color: #475467;
+      border-radius: 2px;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 800;
+      line-height: 1;
+      padding: 7px 9px;
+      cursor: pointer;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+      transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
+    }
+
+    .tab:hover {
+      border-color: #98a5b8;
+      color: #1d2939;
+    }
+
+    .tab.active {
+      border-color: var(--accent);
+      background: #eef2f6;
+      color: #111827;
+    }
+
+    #errorMessage {
+      margin: 0 0 8px 0;
+      border: 1px solid #fda4af;
+      border-radius: 2px;
+      background: #fff1f2;
+      color: #9f1239;
+      padding: 7px 9px;
+      font-size: 11px;
+      line-height: 1.35;
+      display: none;
+    }
+
+    .panel {
+      display: none;
+      margin-top: 0;
+    }
+
+    .panel.active {
+      display: block;
+    }
+
+    .live-studies,
+    .events {
+      min-height: 420px;
+      max-height: 420px;
+      overflow: auto;
+      padding: 0;
+      border: none;
+      background: transparent;
+    }
+
+    .live-studies::-webkit-scrollbar,
+    .events::-webkit-scrollbar,
+    .debug-log::-webkit-scrollbar {
+      width: 7px;
+    }
+
+    .live-studies::-webkit-scrollbar-thumb,
+    .events::-webkit-scrollbar-thumb,
+    .debug-log::-webkit-scrollbar-thumb {
+      background: #c6ceda;
+      border-radius: 2px;
+    }
+
+    .event {
+      padding: 7px 8px;
+      border: 1px solid var(--line);
+      border-left-width: 2px;
+      border-radius: 2px;
+      margin: 0 0 5px 0;
+      font-size: 11px;
+      background: var(--surface);
+    }
+
+    .event.available {
+      border-left-color: var(--good);
+      background: var(--surface);
+    }
+
+    .event.unavailable {
+      border-left-color: var(--bad);
+      background: var(--surface-2);
+    }
+
+    .event.live {
+      border-left-color: #98a2b3;
+      background: var(--surface);
+    }
+
+    .event-link {
+      display: block;
+      text-decoration: none;
+      color: inherit;
+      border-radius: 2px;
+      transition: transform 100ms ease;
+      outline: none;
+    }
+
+    .event-link:hover .event {
+      transform: translateY(-1px);
+      border-color: #b6c0cf;
+      background: #f9fafb;
+    }
+
+    .event-link:focus-visible .event {
+      box-shadow: 0 0 0 1px #98a7bb;
+      border-color: #98a7bb;
+    }
+
+    .event-link:active .event {
+      transform: translateY(0);
+    }
+
+    .event-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .event-title {
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.25;
+      margin-right: auto;
+      letter-spacing: 0.003em;
+      color: #101828;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .event-time {
+      color: #667085;
+      font-size: 10px;
+      white-space: nowrap;
+      text-align: right;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+    }
+
+    .event-badges {
+      margin-top: 6px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .badge {
+      background: var(--chip);
+      border: 1px solid var(--chip-border);
+      border-radius: 2px;
+      padding: 2px 7px;
+      font-size: 10px;
+      color: var(--chip-text);
+      white-space: nowrap;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+    }
+
+    .badge.place {
+      border-color: var(--chip-border);
+      background: var(--chip);
+      color: var(--chip-text);
+    }
+
+    .badge.place.low {
+      border-color: #f1c27d;
+      background: #fff4e5;
+      color: #9a4f08;
+    }
+
+    .badge.rate-high {
+      border-color: #8ad3aa;
+      background: #e7f8ef;
+      color: #0f5132;
+    }
+
+    .badge.rate-ultra {
+      border-color: #b8a1e6;
+      background: #f0eaff;
+      color: #5b2e91;
+    }
+
+    .empty-events {
+      padding: 16px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+      border: 1px dashed var(--line);
+      border-radius: 2px;
+      background: #fafbfc;
+    }
+
+    .settings {
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      padding: 0;
+    }
+
+    .setting-card {
+      border: 1px solid var(--line);
+      border-radius: 2px;
+      background: var(--surface);
+      padding: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .setting-card.stack {
+      display: block;
+    }
+
+    .setting-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #101828;
+    }
+
+    .setting-sub {
+      font-size: 10px;
+      color: #667085;
+      margin-top: 2px;
+    }
+
+    .refresh-config-grid {
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .refresh-field {
+      display: grid;
+      grid-template-columns: 132px 1fr auto;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .refresh-field label {
+      font-size: 10px;
+      color: #667085;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+    }
+
+    .refresh-value {
+      font-size: 11px;
+      color: #111827;
+      font-weight: 800;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+      text-align: right;
+      min-width: 34px;
+    }
+
+    .refresh-field input[type="range"] {
+      width: 100%;
+      height: 24px;
+      margin: 0;
+      accent-color: #64748b;
+    }
+
+    .refresh-save-bar {
+      margin-top: 8px;
+      width: 100%;
+      border: 1px solid #c8d0dd;
+      background: transparent;
+      color: #475467;
+      border-radius: 2px;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-weight: 800;
+      line-height: 1;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+      height: 30px;
+    }
+
+    .refresh-save-bar:hover {
+      border-color: #98a7bb;
+      color: #1d2939;
+      background: #f8fafc;
+    }
+
+    .refresh-plan-summary {
+      margin-top: 8px;
+      font-size: 10px;
+      color: #475467;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+
+    .refresh-plan-track {
+      margin-top: 8px;
+      border: 1px solid var(--line);
+      border-radius: 2px;
+      background: #f8fafc;
+      height: 44px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .refresh-track-label {
+      position: absolute;
+      bottom: 3px;
+      font-size: 9px;
+      color: #667085;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 700;
+    }
+
+    .refresh-track-label.left {
+      left: 6px;
+    }
+
+    .refresh-track-label.right {
+      right: 6px;
+      text-align: right;
+    }
+
+    .refresh-window {
+      position: absolute;
+      top: 8px;
+      height: 18px;
+      border-radius: 2px;
+      background: rgba(100, 116, 139, 0.25);
+      border: 1px solid rgba(100, 116, 139, 0.35);
+      box-sizing: border-box;
+    }
+
+    .refresh-min-window {
+      position: absolute;
+      top: 8px;
+      height: 18px;
+      border-radius: 2px;
+      background: rgba(220, 38, 38, 0.11);
+      border: 1px solid rgba(220, 38, 38, 0.26);
+      box-sizing: border-box;
+    }
+
+    .refresh-marker {
+      position: absolute;
+      top: 6px;
+      width: 2px;
+      border-radius: 2px;
+      transform: translateX(-1px);
+    }
+
+    .refresh-marker.boundary {
+      height: 22px;
+      background: #84cc16;
+    }
+
+    .refresh-marker.service {
+      height: 18px;
+      background: #111827;
+      top: 8px;
+    }
+
+    .debug-card {
+      border: 1px solid var(--line);
+      border-radius: 2px;
+      background: var(--surface);
+      padding: 8px;
+      margin-top: 0;
+    }
+
+    .debug-details {
+      border: 1px solid var(--line);
+      border-radius: 2px;
+      background: #fbfcfd;
+      margin-top: 0;
+    }
+
+    .debug-summary {
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+      color: #334155;
+      padding: 8px 10px;
+      list-style: none;
+      user-select: none;
+    }
+
+    .debug-summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .debug-summary::before {
+      content: "▸";
+      display: inline-block;
+      margin-right: 6px;
+      color: #64748b;
+      transform: translateY(-1px);
+    }
+
+    .debug-details[open] .debug-summary::before {
+      content: "▾";
+    }
+
+    .debug-details[open] .debug-summary {
+      border-bottom: 1px solid var(--line);
+      background: #f5f7fa;
+    }
+
+    .debug-details .debug-card {
+      border: 0;
+      background: transparent;
+    }
+
+    .debug-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .debug-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #101828;
+    }
+
+    .debug-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .debug-btn {
+      border: 1px solid #c8d0dd;
+      background: transparent;
+      color: #475467;
+      border-radius: 2px;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-weight: 800;
+      line-height: 1;
+      padding: 6px 8px;
+      cursor: pointer;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+    }
+
+    .debug-btn:hover {
+      border-color: #98a7bb;
+      color: #1d2939;
+      background: #f8fafc;
+    }
+
+    .debug-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 5px 8px;
+      font-size: 11px;
+      margin-bottom: 8px;
+    }
+
+    .debug-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      border-bottom: 1px dotted #d7dee8;
+      padding-bottom: 2px;
+    }
+
+    .debug-key {
+      color: #667085;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .debug-value {
+      color: #111827;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 62%;
+      text-align: right;
+    }
+
+    .debug-log {
+      max-height: 180px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 2px;
+      background: #fafbfc;
+      padding: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 10px;
+      line-height: 1.35;
+      color: #344054;
+    }
+
+    .debug-line {
+      margin-bottom: 4px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .debug-line:last-child {
+      margin-bottom: 0;
+    }
+
+    #autoOpenToggle {
+      appearance: none;
+      width: 40px;
+      height: 22px;
+      border-radius: 12px;
+      background: #e2e8f0;
+      border: 1px solid #c0cad8;
+      position: relative;
+      cursor: pointer;
+      transition: background 120ms ease, border-color 120ms ease;
+      flex: 0 0 auto;
+    }
+
+    #autoOpenToggle::before {
+      content: "";
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(4, 10, 22, 0.2);
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      transition: transform 120ms ease;
+    }
+
+    #autoOpenToggle:checked {
+      background: #cfe3ff;
+      border-color: #9dc0f0;
+    }
+
+    #autoOpenToggle:checked::before {
+      transform: translateX(18px);
+    }
+
+    @media (max-width: 640px) {
+      body {
+        width: 590px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="shell">
+      <div class="topbar">
+        <div class="status-cluster">
+          <span id="syncDot" class="dot" title="Sync status"></span>
+          <span class="refresh"><span id="refreshPrefix">Updated </span><span id="latestRefresh">never</span></span>
+        </div>
+        <div class="tabs" role="tablist" aria-label="Popup tabs">
+          <button id="tabLive" class="tab active" type="button" data-tab="live" role="tab" aria-selected="true">Live</button>
+          <button id="tabFeed" class="tab" type="button" data-tab="feed" role="tab" aria-selected="false">Feed</button>
+          <button id="tabSettings" class="tab" type="button" data-tab="settings" role="tab" aria-selected="false">Settings</button>
+        </div>
+      </div>
+
+      <div id="errorMessage"></div>
+
+      <div id="panelLive" class="panel active" role="tabpanel" aria-labelledby="tabLive">
+        <div id="liveStudies" class="live-studies">
+          <div class="empty-events">No currently available studies cached yet.</div>
+        </div>
+      </div>
+
+      <div id="panelFeed" class="panel" role="tabpanel" aria-labelledby="tabFeed">
+        <div id="events" class="events">
+          <div class="empty-events">No study events yet.</div>
+        </div>
+      </div>
+
+      <div id="panelSettings" class="panel" role="tabpanel" aria-labelledby="tabSettings">
+        <div class="settings">
+          <div class="setting-card">
+            <div>
+              <div class="setting-title">Auto-open Prolific tab</div>
+              <div class="setting-sub">Keeps a background Prolific tab alive when none are open.</div>
+            </div>
+            <input id="autoOpenToggle" type="checkbox" aria-label="Auto-open Prolific tab">
+          </div>
+
+          <div class="setting-card stack">
+            <div class="setting-title">Service refresh cadence</div>
+            <div class="setting-sub">Plan delayed backend refreshes inside each 2-minute Prolific auto-refresh cycle.</div>
+            <div class="refresh-config-grid">
+              <div class="refresh-field">
+                <label for="refreshMinDelayInput">Minimum delay (s)</label>
+                <input id="refreshMinDelayInput" type="range" min="1" max="60" step="1">
+                <span id="refreshMinDelayValue" class="refresh-value">20s</span>
+              </div>
+              <div class="refresh-field">
+                <label for="refreshAverageDelayInput">Average delay (s)</label>
+                <input id="refreshAverageDelayInput" type="range" min="5" max="60" step="1">
+                <span id="refreshAverageDelayValue" class="refresh-value">30s</span>
+              </div>
+              <div class="refresh-field">
+                <label for="refreshSpreadInput">Spread (s)</label>
+                <input id="refreshSpreadInput" type="range" min="0" max="60" step="1">
+                <span id="refreshSpreadValue" class="refresh-value">0s</span>
+              </div>
+            </div>
+            <div id="refreshPlanSummary" class="refresh-plan-summary"></div>
+            <div id="refreshPlanTrack" class="refresh-plan-track"></div>
+            <button id="refreshCadenceSaveButton" class="refresh-save-bar" type="button">Save Refresh Cadence</button>
+          </div>
+
+          <details class="debug-details">
+            <summary class="debug-summary">Diagnostics</summary>
+            <div class="debug-card">
+              <div class="debug-head">
+                <div class="debug-title">Diagnostics</div>
+                <div class="debug-actions">
+                  <button id="refreshDebugButton" class="debug-btn" type="button">Refresh</button>
+                  <button id="clearDebugButton" class="debug-btn" type="button">Clear Log</button>
+                </div>
+              </div>
+              <div id="debugGrid" class="debug-grid"></div>
+              <div id="debugLog" class="debug-log"></div>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
