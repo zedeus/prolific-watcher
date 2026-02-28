@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/Noooste/azuretls-client v1.12.12
+	github.com/coder/websocket v1.8.14
 	modernc.org/sqlite v1.46.1
 )
 

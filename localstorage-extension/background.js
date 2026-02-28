@@ -1,16 +1,70 @@
 const PROLIFIC_PATTERNS = ["*://*.prolific.com/*"];
 const STUDIES_REQUEST_PATTERN = "*://internal-api.prolific.com/api/v1/participant/studies/*";
+const PARTICIPANT_SUBMISSIONS_PATTERN = "*://internal-api.prolific.com/api/v1/participant/submissions/*";
+const SUBMISSIONS_RESERVE_PATTERN = "*://internal-api.prolific.com/api/v1/submissions/reserve/*";
+const SUBMISSIONS_TRANSITION_PATTERN = "*://internal-api.prolific.com/api/v1/submissions/*/transition/*";
+const SUBMISSION_PATTERNS = [SUBMISSIONS_RESERVE_PATTERN, SUBMISSIONS_TRANSITION_PATTERN];
 const OAUTH_TOKEN_PATTERN = "*://auth.prolific.com/oauth/token*";
 
 const SERVICE_BASE_URL = "http://localhost:8080";
 const SERVICE_OFFLINE_MESSAGE = "Local service offline, start the Go server to continue.";
-const SERVICE_ENDPOINTS = Object.freeze({
-  token: `${SERVICE_BASE_URL}/receive-token`,
-  clearToken: `${SERVICE_BASE_URL}/clear-token`,
-  studiesHeaders: `${SERVICE_BASE_URL}/receive-studies-headers`,
-  studiesRefresh: `${SERVICE_BASE_URL}/receive-studies-refresh`,
-  studiesResponse: `${SERVICE_BASE_URL}/receive-studies-response`,
-  scheduleDelayedRefresh: `${SERVICE_BASE_URL}/schedule-delayed-refresh`
+const SERVICE_WS_URL = SERVICE_BASE_URL.replace(/^http/i, "ws") + "/ws";
+const SERVICE_WS_HEARTBEAT_INTERVAL_MS = 10_000;
+const SERVICE_WS_HEARTBEAT_TIMEOUT_MS = 25_000;
+const SERVICE_WS_RECONNECT_BASE_DELAY_MS = 500;
+const SERVICE_WS_RECONNECT_MAX_DELAY_MS = 15_000;
+const SERVICE_WS_RECONNECT_JITTER_MS = 250;
+const DASHBOARD_DEFAULT_STUDIES_LIMIT = 50;
+const DASHBOARD_DEFAULT_EVENTS_LIMIT = 25;
+const DASHBOARD_DEFAULT_SUBMISSIONS_LIMIT = 100;
+const DASHBOARD_MIN_LIMIT = 1;
+const DASHBOARD_MAX_LIMIT = 500;
+const SERVICE_WS_MESSAGE_TYPES = Object.freeze({
+  token: "receive-token",
+  clearToken: "clear-token",
+  studiesHeaders: "receive-studies-headers",
+  studiesRefresh: "receive-studies-refresh",
+  studiesResponse: "receive-studies-response",
+  submissionResponse: "receive-submission-response",
+  participantSubmissionsResponse: "receive-participant-submissions-response",
+  scheduleDelayedRefresh: "schedule-delayed-refresh"
+});
+const SERVICE_WS_COMMANDS = Object.freeze({
+  token: Object.freeze({
+    messageType: SERVICE_WS_MESSAGE_TYPES.token,
+    errorPrefix: "Token endpoint"
+  }),
+  clearToken: Object.freeze({
+    messageType: SERVICE_WS_MESSAGE_TYPES.clearToken,
+    errorPrefix: "Clear token endpoint"
+  }),
+  studiesHeaders: Object.freeze({
+    messageType: SERVICE_WS_MESSAGE_TYPES.studiesHeaders,
+    errorPrefix: "Studies header endpoint"
+  }),
+  studiesRefresh: Object.freeze({
+    messageType: SERVICE_WS_MESSAGE_TYPES.studiesRefresh,
+    errorPrefix: "Studies refresh endpoint"
+  }),
+  studiesResponse: Object.freeze({
+    messageType: SERVICE_WS_MESSAGE_TYPES.studiesResponse,
+    errorPrefix: "Studies response endpoint"
+  }),
+  submissionResponse: Object.freeze({
+    messageType: SERVICE_WS_MESSAGE_TYPES.submissionResponse,
+    errorPrefix: "Submission response endpoint"
+  }),
+  participantSubmissionsResponse: Object.freeze({
+    messageType: SERVICE_WS_MESSAGE_TYPES.participantSubmissionsResponse,
+    errorPrefix: "Participant submissions response endpoint"
+  }),
+  scheduleDelayedRefresh: Object.freeze({
+    messageType: SERVICE_WS_MESSAGE_TYPES.scheduleDelayedRefresh,
+    errorPrefix: "Delayed refresh schedule endpoint"
+  })
+});
+const SERVICE_WS_SERVER_EVENT_TYPES = Object.freeze({
+  studiesRefreshEvent: "studies_refresh_event"
 });
 
 const STATE_KEY = "syncState";
@@ -50,12 +104,23 @@ const PROLIFIC_STUDIES_URL = "https://app.prolific.com/studies";
 const STUDIES_COLLECTION_PATH = "/api/v1/participant/studies/";
 
 let syncInProgress = false;
+let pendingSyncTrigger = "";
 let studiesHeaderListenerRegistered = false;
 let studiesCompletedListenerRegistered = false;
 let studiesResponseCaptureRegistered = false;
+let submissionResponseCaptureRegistered = false;
+let participantSubmissionsResponseCaptureRegistered = false;
 let oauthCompletedListenerRegistered = false;
 let oauthResponseCaptureRegistered = false;
 let stateWriteQueue = Promise.resolve();
+let serviceSocket = null;
+let serviceSocketConnectInFlight = false;
+let serviceSocketReconnectTimer = null;
+let serviceSocketHeartbeatTimer = null;
+let serviceSocketReconnectAttempts = 0;
+let serviceSocketLastHeartbeatAckAt = 0;
+let autoOpenInFlight = false;
+let lastAutoOpenedTabId = null;
 
 function nowIso() {
   return new Date().toISOString();
@@ -79,38 +144,145 @@ async function setTokenSyncState({ ok, trigger, reason, authRequired = false, ex
 }
 
 function stringifyError(error) {
-  const message = (() => {
-    if (!error) {
-      return "";
-    }
-    if (error instanceof Error && error.message) {
-      return error.message;
-    }
-    return String(error);
-  })();
-
-  const lowered = message.toLowerCase();
-  const isNetworkFailure = lowered.includes("failed to fetch") ||
-    lowered.includes("networkerror") ||
-    lowered.includes("network request failed") ||
-    lowered.includes("load failed") ||
-    lowered.includes("fetch resource");
-
-  if (isNetworkFailure) {
+  const message = rawErrorMessage(error);
+  if (isNetworkFailureMessage(message)) {
     return SERVICE_OFFLINE_MESSAGE;
   }
-
   return message;
 }
 
 function rawErrorMessage(error) {
-  if (!error) {
-    return "";
-  }
   if (error instanceof Error && error.message) {
     return error.message;
   }
+  if (error == null) {
+    return "";
+  }
   return String(error);
+}
+
+function isNetworkFailureMessage(message) {
+  const lowered = String(message || "").toLowerCase();
+  return lowered.includes("failed to fetch") ||
+    lowered.includes("networkerror") ||
+    lowered.includes("network request failed") ||
+    lowered.includes("load failed") ||
+    lowered.includes("fetch resource");
+}
+
+function parseInternalAPIURL(raw) {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "https:") {
+      return null;
+    }
+    if (parsed.hostname !== "internal-api.prolific.com") {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function notifyPopupDashboardUpdated(trigger, observedAt) {
+  const normalizedObservedAt = typeof observedAt === "string" ? observedAt.trim() : "";
+  const payload = {
+    action: "dashboardUpdated",
+    trigger: String(trigger || "unknown"),
+    observed_at: normalizedObservedAt || nowIso()
+  };
+
+  try {
+    const maybePromise = chrome.runtime.sendMessage(payload);
+    if (maybePromise && typeof maybePromise.catch === "function") {
+      maybePromise.catch(() => {
+        // Popup may be closed; ignore delivery errors.
+      });
+    }
+  } catch {
+    // Popup may be closed; ignore delivery errors.
+  }
+}
+
+function extractObservedAtFromStudiesRefreshEvent(parsed) {
+  if (!parsed || typeof parsed !== "object") {
+    return "";
+  }
+
+  const direct = typeof parsed.at === "string" ? parsed.at.trim() : "";
+  const dataObservedAt = parsed.data && typeof parsed.data === "object" && typeof parsed.data.observed_at === "string"
+    ? parsed.data.observed_at.trim()
+    : "";
+
+  return dataObservedAt || direct || nowIso();
+}
+
+function clampDashboardLimit(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(DASHBOARD_MAX_LIMIT, Math.max(DASHBOARD_MIN_LIMIT, parsed));
+}
+
+async function fetchServiceJSON(path, contextLabel) {
+  let response;
+  try {
+    response = await fetch(`${SERVICE_BASE_URL}${path}`);
+  } catch (error) {
+    const message = stringifyError(error);
+    if (message === SERVICE_OFFLINE_MESSAGE) {
+      throw new Error(SERVICE_OFFLINE_MESSAGE);
+    }
+    throw new Error(`${contextLabel}: ${rawErrorMessage(error) || "network error"}`);
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${contextLabel}: HTTP ${response.status}${text ? ` ${text}` : ""}`);
+  }
+
+  return response.json();
+}
+
+function extractArrayField(payload, key) {
+  if (!payload || !Array.isArray(payload[key])) {
+    return [];
+  }
+  return payload[key];
+}
+
+async function loadDashboardData(liveLimit, eventsLimit, submissionsLimit) {
+  const [refreshResult, studiesResult, eventsResult, submissionsResult] = await Promise.allSettled([
+    fetchServiceJSON("/studies-refresh", "Failed to fetch refresh state"),
+    fetchServiceJSON(`/studies?limit=${liveLimit}`, "Failed to fetch live studies"),
+    fetchServiceJSON(`/study-events?limit=${eventsLimit}`, "Failed to fetch study events"),
+    fetchServiceJSON(`/submissions?phase=all&limit=${submissionsLimit}`, "Failed to fetch submissions")
+  ]);
+
+  const parseResult = (result, extractor) => {
+    if (result.status === "fulfilled") {
+      return {
+        ok: true,
+        data: extractor(result.value)
+      };
+    }
+    return {
+      ok: false,
+      error: stringifyError(result.reason)
+    };
+  };
+
+  return {
+    refresh_state: parseResult(refreshResult, (payload) => payload || null),
+    studies: parseResult(studiesResult, (payload) => extractArrayField(payload, "results")),
+    events: parseResult(eventsResult, (payload) => extractArrayField(payload, "events")),
+    submissions: parseResult(submissionsResult, (payload) => extractArrayField(payload, "results"))
+  };
 }
 
 function normalizeStudiesRefreshPolicy(rawMinimumDelaySeconds, rawAverageDelaySeconds, rawSpreadSeconds) {
@@ -327,26 +499,57 @@ function getFilterResponseDataFunction() {
 }
 
 function normalizeStudiesCollectionURL(raw) {
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== "https:") {
-      return "";
-    }
-    if (parsed.hostname !== "internal-api.prolific.com") {
-      return "";
-    }
-
-    const path = parsed.pathname.replace(/\/+$/, "");
-    const expected = STUDIES_COLLECTION_PATH.replace(/\/+$/, "");
-    if (path !== expected) {
-      return "";
-    }
-
-    parsed.pathname = STUDIES_COLLECTION_PATH;
-    return parsed.toString();
-  } catch {
+  const parsed = parseInternalAPIURL(raw);
+  if (!parsed) {
     return "";
   }
+
+  const path = parsed.pathname.replace(/\/+$/, "");
+  const expected = STUDIES_COLLECTION_PATH.replace(/\/+$/, "");
+  if (path !== expected) {
+    return "";
+  }
+
+  parsed.pathname = STUDIES_COLLECTION_PATH;
+  return parsed.toString();
+}
+
+function normalizeSubmissionURL(raw) {
+  const parsed = parseInternalAPIURL(raw);
+  if (!parsed) {
+    return "";
+  }
+
+  const path = parsed.pathname.replace(/\/+$/, "/");
+  if (path === "/api/v1/submissions/reserve/") {
+    parsed.pathname = "/api/v1/submissions/reserve/";
+    parsed.search = "";
+    return parsed.toString();
+  }
+
+  const transitionMatch = path.match(/^\/api\/v1\/submissions\/([^/]+)\/transition\/$/);
+  if (!transitionMatch || !transitionMatch[1]) {
+    return "";
+  }
+
+  parsed.pathname = `/api/v1/submissions/${transitionMatch[1]}/transition/`;
+  parsed.search = "";
+  return parsed.toString();
+}
+
+function normalizeParticipantSubmissionsURL(raw) {
+  const parsed = parseInternalAPIURL(raw);
+  if (!parsed) {
+    return "";
+  }
+
+  const path = parsed.pathname.replace(/\/+$/, "/");
+  if (path !== "/api/v1/participant/submissions/") {
+    return "";
+  }
+
+  parsed.pathname = "/api/v1/participant/submissions/";
+  return parsed.toString();
 }
 
 async function extractTokenFromTab(tabId) {
@@ -404,52 +607,234 @@ async function extractTokenFromTab(tabId) {
   return results[0].result || { error: "Empty script result." };
 }
 
-async function postJSON(url, payload, errorPrefix) {
-  let response;
+function isServiceSocketReady() {
+  return serviceSocket && serviceSocket.readyState === WebSocket.OPEN;
+}
+
+function updateServiceSocketState(connected, reason) {
+  setState({
+    service_ws_connected: connected,
+    service_ws_reason: reason,
+    service_ws_last_at: nowIso()
+  });
+}
+
+function startServiceSocketHeartbeatLoop() {
+  if (serviceSocketHeartbeatTimer) {
+    clearInterval(serviceSocketHeartbeatTimer);
+  }
+
+  serviceSocketHeartbeatTimer = setInterval(() => {
+    if (!isServiceSocketReady()) {
+      return;
+    }
+
+    const now = Date.now();
+    if (serviceSocketLastHeartbeatAckAt > 0 && now - serviceSocketLastHeartbeatAckAt > SERVICE_WS_HEARTBEAT_TIMEOUT_MS) {
+      pushDebugLog("service.ws.heartbeat_timeout", { timeout_ms: SERVICE_WS_HEARTBEAT_TIMEOUT_MS });
+      try {
+        serviceSocket.close();
+      } catch {
+        // Best effort.
+      }
+      return;
+    }
+
+    try {
+      serviceSocket.send(JSON.stringify({
+        type: "heartbeat",
+        sent_at: nowIso()
+      }));
+    } catch {
+      // Close handler will trigger reconnect.
+      try {
+        serviceSocket.close();
+      } catch {
+        // Best effort.
+      }
+    }
+  }, SERVICE_WS_HEARTBEAT_INTERVAL_MS);
+}
+
+function stopServiceSocketHeartbeatLoop() {
+  if (serviceSocketHeartbeatTimer) {
+    clearInterval(serviceSocketHeartbeatTimer);
+    serviceSocketHeartbeatTimer = null;
+  }
+}
+
+function scheduleServiceSocketReconnect(reason) {
+  if (serviceSocketReconnectTimer) {
+    return;
+  }
+
+  const baseDelay = Math.min(
+    SERVICE_WS_RECONNECT_MAX_DELAY_MS,
+    SERVICE_WS_RECONNECT_BASE_DELAY_MS * (2 ** serviceSocketReconnectAttempts)
+  );
+  const jitter = Math.floor(Math.random() * SERVICE_WS_RECONNECT_JITTER_MS);
+  const delay = baseDelay + jitter;
+
+  serviceSocketReconnectAttempts += 1;
+  serviceSocketReconnectTimer = setTimeout(() => {
+    serviceSocketReconnectTimer = null;
+    ensureServiceSocketConnected(reason || "reconnect_timer");
+  }, delay);
+}
+
+function ensureServiceSocketConnected(reason) {
+  if (typeof WebSocket === "undefined") {
+    return;
+  }
+
+  if (isServiceSocketReady() || serviceSocketConnectInFlight) {
+    return;
+  }
+
+  if (serviceSocket && serviceSocket.readyState === WebSocket.CONNECTING) {
+    return;
+  }
+
+  if (serviceSocketReconnectTimer) {
+    clearTimeout(serviceSocketReconnectTimer);
+    serviceSocketReconnectTimer = null;
+  }
+
+  let socket;
   try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    socket = new WebSocket(SERVICE_WS_URL);
+  } catch {
+    scheduleServiceSocketReconnect("connect_constructor_failed");
+    return;
+  }
+
+  serviceSocket = socket;
+  serviceSocketConnectInFlight = true;
+
+  socket.onopen = () => {
+    if (serviceSocket !== socket) {
+      return;
+    }
+    serviceSocketConnectInFlight = false;
+    serviceSocketReconnectAttempts = 0;
+    serviceSocketLastHeartbeatAckAt = Date.now();
+    updateServiceSocketState(true, `connected:${reason}`);
+    pushDebugLog("service.ws.connected", { reason });
+    startServiceSocketHeartbeatLoop();
+  };
+
+  socket.onmessage = (event) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    if (!parsed || typeof parsed !== "object") {
+      return;
+    }
+
+    const messageType = typeof parsed.type === "string" ? parsed.type : "";
+    if (messageType === "heartbeat_ack") {
+      serviceSocketLastHeartbeatAckAt = Date.now();
+      return;
+    }
+
+    if (messageType === SERVICE_WS_SERVER_EVENT_TYPES.studiesRefreshEvent) {
+      const observedAt = extractObservedAtFromStudiesRefreshEvent(parsed);
+      notifyPopupDashboardUpdated("service.ws.studies_refresh_event", observedAt);
+      return;
+    }
+
+    if (messageType === "ack") {
+      if (parsed.ok === false) {
+        const errorMessage = typeof parsed.error === "string" && parsed.error
+          ? parsed.error
+          : "request failed";
+        pushDebugLog("service.ws.command_error", { error: errorMessage });
+      }
+      return;
+    }
+
+    if (messageType) {
+      pushDebugLog("service.ws.unknown_message_type", {
+        type: messageType
+      });
+    }
+  };
+
+  socket.onerror = () => {
+    if (serviceSocket !== socket) {
+      return;
+    }
+    pushDebugLog("service.ws.error", { reason });
+  };
+
+  socket.onclose = () => {
+    if (serviceSocket !== socket) {
+      return;
+    }
+
+    serviceSocket = null;
+    serviceSocketConnectInFlight = false;
+    stopServiceSocketHeartbeatLoop();
+    updateServiceSocketState(false, "disconnected");
+    pushDebugLog("service.ws.disconnected", { reason });
+    scheduleServiceSocketReconnect("background_keepalive");
+  };
+}
+
+function queueServiceSocketMessage(messageType, payload) {
+  if (!messageType) {
+    throw new Error("missing websocket message type");
+  }
+
+  const encoded = JSON.stringify({
+    type: messageType,
+    sent_at: nowIso(),
+    payload
+  });
+
+  if (isServiceSocketReady()) {
+    try {
+      serviceSocket.send(encoded);
+      return;
+    } catch {
+      try {
+        serviceSocket.close();
+      } catch {
+        // Best effort.
+      }
+      pushDebugLog("service.ws.send_failed", { type: messageType });
+      ensureServiceSocketConnected(`send_failed:${messageType}`);
+      throw new Error(SERVICE_OFFLINE_MESSAGE);
+    }
+  }
+
+  pushDebugLog("service.ws.command_dropped_not_connected", { type: messageType });
+  ensureServiceSocketConnected(`message:${messageType}`);
+  throw new Error(SERVICE_OFFLINE_MESSAGE);
+}
+
+async function sendServiceCommand(messageType, payload, errorPrefix) {
+  try {
+    queueServiceSocketMessage(messageType, payload);
   } catch (error) {
     if (stringifyError(error) === SERVICE_OFFLINE_MESSAGE) {
       throw new Error(SERVICE_OFFLINE_MESSAGE);
     }
-    throw new Error(rawErrorMessage(error));
-  }
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${errorPrefix} returned ${response.status}: ${text}`);
+    const prefix = errorPrefix || "WebSocket command";
+    throw new Error(`${prefix} failed: ${rawErrorMessage(error)}`);
   }
 }
 
-async function postTokenToService(payload) {
-  await postJSON(SERVICE_ENDPOINTS.token, payload, "Token endpoint");
-}
-
-async function clearTokenInService(reason) {
-  await postJSON(SERVICE_ENDPOINTS.clearToken, { reason }, "Clear token endpoint");
-}
-
-async function postStudiesHeadersToService(payload) {
-  await postJSON(SERVICE_ENDPOINTS.studiesHeaders, payload, "Studies header endpoint");
-}
-
-async function postStudiesRefreshToService(payload) {
-  await postJSON(SERVICE_ENDPOINTS.studiesRefresh, payload, "Studies refresh endpoint");
-}
-
-async function postStudiesResponseToService(payload) {
-  await postJSON(SERVICE_ENDPOINTS.studiesResponse, payload, "Studies response endpoint");
-}
-
-async function scheduleDelayedRefreshCycle(policy, trigger) {
-  await postJSON(SERVICE_ENDPOINTS.scheduleDelayedRefresh, {
-    policy,
-    trigger
-  }, "Delayed refresh schedule endpoint");
+function sendServiceCommandByName(commandName, payload) {
+  const command = SERVICE_WS_COMMANDS[commandName];
+  if (!command) {
+    return Promise.reject(new Error(`unknown service command: ${commandName}`));
+  }
+  return sendServiceCommand(command.messageType, payload, command.errorPrefix);
 }
 
 async function setStudiesRefreshState(ok, reason) {
@@ -460,72 +845,156 @@ async function setStudiesRefreshState(ok, reason) {
   });
 }
 
-async function maybeAutoOpenProlificTab(trigger) {
-  const stored = await chrome.storage.local.get([AUTO_OPEN_PROLIFIC_TAB_KEY]);
-  const autoOpenEnabled = stored[AUTO_OPEN_PROLIFIC_TAB_KEY] !== false;
+async function queryProlificTabs() {
+  const tabs = await chrome.tabs.query({ url: PROLIFIC_PATTERNS });
+  return Array.isArray(tabs) ? tabs : [];
+}
 
-  if (!autoOpenEnabled) {
-    await setTokenSyncState({
-      ok: false,
-      authRequired: false,
-      trigger,
-      reason: "No open Prolific tab found and auto-open is disabled.",
-      extra: {
-        token_key: "",
-        token_origin: ""
-      }
-    });
-    await setState({
-      auto_open_enabled: false
-    });
-    pushDebugLog("tab.auto_open.disabled", { trigger });
+async function hasTrackedAutoOpenedTab() {
+  if (typeof lastAutoOpenedTabId !== "number") {
     return false;
   }
-
-  const createdTab = await chrome.tabs.create({
-    url: PROLIFIC_STUDIES_URL,
-    active: false
-  });
-  if (createdTab && typeof createdTab.id === "number") {
-    try {
-      await chrome.tabs.update(createdTab.id, { pinned: true });
-    } catch {
-      // Best effort.
-    }
+  try {
+    const trackedTab = await chrome.tabs.get(lastAutoOpenedTabId);
+    return Boolean(trackedTab);
+  } catch {
+    lastAutoOpenedTabId = null;
+    return false;
   }
+}
 
+async function setMissingProlificTabState(trigger, reason, autoOpenEnabled) {
   await setTokenSyncState({
     ok: false,
     authRequired: false,
     trigger,
-    reason: "No open Prolific tab found. Opened one automatically.",
+    reason,
     extra: {
       token_key: "",
       token_origin: ""
     }
   });
-  await setState({
-    auto_open_enabled: true,
-    auto_open_last_opened_at: nowIso()
-  });
+
+  const patch = { auto_open_enabled: autoOpenEnabled };
+  if (autoOpenEnabled) {
+    patch.auto_open_last_opened_at = nowIso();
+  }
+  await setState(patch);
+}
+
+async function maybeAutoOpenProlificTab(trigger, knownProlificTabs) {
+  const stored = await chrome.storage.local.get([AUTO_OPEN_PROLIFIC_TAB_KEY]);
+  const autoOpenEnabled = stored[AUTO_OPEN_PROLIFIC_TAB_KEY] !== false;
+
+  if (!autoOpenEnabled) {
+    await setMissingProlificTabState(
+      trigger,
+      "No open Prolific tab found and auto-open is disabled.",
+      false
+    );
+    pushDebugLog("tab.auto_open.disabled", { trigger });
+    return false;
+  }
+
+  // Dedupe strategy: allow only one open in-flight, and do not auto-open
+  // again while the last auto-opened tab still exists.
+  if (autoOpenInFlight) {
+    pushDebugLog("tab.auto_open.dedup_skip", {
+      trigger,
+      in_flight: true
+    });
+    return false;
+  }
+
+  if (await hasTrackedAutoOpenedTab()) {
+    pushDebugLog("tab.auto_open.dedup_skip", {
+      trigger,
+      in_flight: false,
+      last_tab_id: lastAutoOpenedTabId
+    });
+    return false;
+  }
+
+  const existingTabs = Array.isArray(knownProlificTabs) ? knownProlificTabs : await queryProlificTabs();
+  if (existingTabs.length > 0) {
+    pushDebugLog("tab.auto_open.skip_existing_tab", {
+      trigger,
+      count: existingTabs.length
+    });
+    return false;
+  }
+
+  autoOpenInFlight = true;
+  let createdTab = null;
+  try {
+    createdTab = await chrome.tabs.create({
+      url: PROLIFIC_STUDIES_URL,
+      active: false
+    });
+    if (createdTab && typeof createdTab.id === "number") {
+      lastAutoOpenedTabId = createdTab.id;
+      try {
+        await chrome.tabs.update(createdTab.id, { pinned: true });
+      } catch {
+        // Best effort.
+      }
+    }
+  } finally {
+    autoOpenInFlight = false;
+  }
+
+  await setMissingProlificTabState(
+    trigger,
+    "No open Prolific tab found. Opened one automatically.",
+    true
+  );
   bumpCounter("tab_auto_open_count", 1);
   pushDebugLog("tab.auto_open.created", { trigger });
 
   return true;
 }
 
+function normalizeSyncTrigger(trigger) {
+  const normalized = typeof trigger === "string" ? trigger.trim() : "";
+  return normalized || "unknown";
+}
+
+function queuePendingTokenSync(trigger) {
+  const normalizedTrigger = normalizeSyncTrigger(trigger);
+  pendingSyncTrigger = normalizedTrigger;
+  pushDebugLog("token.sync.skip_in_progress", { trigger: normalizedTrigger });
+}
+
+function drainPendingTokenSync() {
+  if (!pendingSyncTrigger) {
+    return;
+  }
+
+  const queuedTrigger = pendingSyncTrigger;
+  pendingSyncTrigger = "";
+  Promise.resolve().then(() => {
+    requestTokenSync(`${queuedTrigger}.queued`);
+  });
+}
+
+function requestTokenSync(trigger) {
+  return syncTokenOnce(normalizeSyncTrigger(trigger));
+}
+
 async function syncTokenOnce(trigger) {
+  const normalizedTrigger = normalizeSyncTrigger(trigger);
+
   if (syncInProgress) {
-    pushDebugLog("token.sync.skip_in_progress", { trigger });
+    queuePendingTokenSync(normalizedTrigger);
     return;
   }
   syncInProgress = true;
-  pushDebugLog("token.sync.start", { trigger });
+  pushDebugLog("token.sync.start", { trigger: normalizedTrigger });
 
   try {
-    const tabs = await chrome.tabs.query({ url: PROLIFIC_PATTERNS });
+    const tabs = await queryProlificTabs();
     if (!tabs.length) {
-      await maybeAutoOpenProlificTab(trigger);
+      await maybeAutoOpenProlificTab(normalizedTrigger, tabs);
       return;
     }
 
@@ -541,7 +1010,7 @@ async function syncTokenOnce(trigger) {
         await setTokenSyncState({
           ok: false,
           authRequired: false,
-          trigger,
+          trigger: normalizedTrigger,
           reason: `Failed to inspect tab ${tab.id}: ${tabError.message}`
         });
       }
@@ -550,11 +1019,11 @@ async function syncTokenOnce(trigger) {
     if (!extracted) {
       const reason = "extension.no_oidc_user_token";
       try {
-        await clearTokenInService(reason);
-        pushDebugLog("token.service_cleared", { trigger, reason });
+        await sendServiceCommandByName("clearToken", { reason });
+        pushDebugLog("token.service_cleared", { trigger: normalizedTrigger, reason });
       } catch (clearError) {
         pushDebugLog("token.service_clear.error", {
-          trigger,
+          trigger: normalizedTrigger,
           reason,
           error: stringifyError(clearError)
         });
@@ -563,7 +1032,7 @@ async function syncTokenOnce(trigger) {
       await setTokenSyncState({
         ok: false,
         authRequired: true,
-        trigger,
+        trigger: normalizedTrigger,
         reason: "Signed out of Prolific. Log in at app.prolific.com to resume syncing.",
         extra: {
           token_key: "",
@@ -573,7 +1042,7 @@ async function syncTokenOnce(trigger) {
       return;
     }
 
-    await postTokenToService({
+    await sendServiceCommandByName("token", {
       access_token: extracted.access_token,
       token_type: extracted.token_type || "Bearer",
       key: extracted.key,
@@ -584,7 +1053,7 @@ async function syncTokenOnce(trigger) {
     await setTokenSyncState({
       ok: true,
       authRequired: false,
-      trigger,
+      trigger: normalizedTrigger,
       reason: "Token synced to Go service.",
       extra: {
         token_key: extracted.key,
@@ -593,31 +1062,32 @@ async function syncTokenOnce(trigger) {
       }
     });
     bumpCounter("token_sync_success_count", 1);
-    pushDebugLog("token.sync.ok", { trigger, tab_origin: extracted.origin });
+    pushDebugLog("token.sync.ok", { trigger: normalizedTrigger, tab_origin: extracted.origin });
   } catch (error) {
     await setTokenSyncState({
       ok: false,
       authRequired: false,
-      trigger,
+      trigger: normalizedTrigger,
       reason: stringifyError(error)
     });
     bumpCounter("token_sync_error_count", 1);
-    pushDebugLog("token.sync.error", { trigger, error: stringifyError(error) });
+    pushDebugLog("token.sync.error", { trigger: normalizedTrigger, error: stringifyError(error) });
   } finally {
     syncInProgress = false;
+    drainPendingTokenSync();
   }
 }
 
 async function handleOAuthTokenPayload(payload, trigger, originHint) {
   if (!payload || typeof payload !== "object" || !payload.access_token) {
     pushDebugLog("oauth.payload.missing_access_token", { trigger });
-    await syncTokenOnce(`${trigger}.fallback_resync`);
+    await requestTokenSync(`${trigger}.fallback_resync`);
     return;
   }
 
   try {
     const browserInfo = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    await postTokenToService({
+    await sendServiceCommandByName("token", {
       access_token: String(payload.access_token),
       token_type: payload.token_type || "Bearer",
       key: "oauth.token.response",
@@ -647,81 +1117,44 @@ async function handleOAuthTokenPayload(payload, trigger, originHint) {
     });
     bumpCounter("oauth_token_capture_error_count", 1);
     pushDebugLog("oauth.capture.error", { trigger, error: stringifyError(error) });
-    await syncTokenOnce(`${trigger}.post_failed_resync`);
+    await requestTokenSync(`${trigger}.post_failed_resync`);
   }
 }
 
 function tapOAuthTokenResponse(details) {
-  const filterResponseData = getFilterResponseDataFunction();
-  if (!filterResponseData) {
-    return;
-  }
-
-  let filter;
-  try {
-    filter = filterResponseData(details.requestId);
-  } catch {
-    return;
-  }
-
-  const decoder = new TextDecoder("utf-8");
-  let bodyText = "";
-
-  filter.ondata = (event) => {
-    bodyText += decoder.decode(event.data, { stream: true });
-    filter.write(event.data);
-  };
-
-  filter.onstop = () => {
-    try {
-      bodyText += decoder.decode();
-      filter.disconnect();
-    } catch {
-      // ignore
+  tapFilteredJSONResponse(details, {
+    onParsed: (parsed) => {
+      const originHint = details.initiator || details.originUrl || "https://auth.prolific.com";
+      handleOAuthTokenPayload(parsed, "oauth_token_response", originHint);
+    },
+    onParseError: () => {
+      requestTokenSync("oauth_token_response.parse_failed_resync");
+    },
+    onFilterError: () => {
+      requestTokenSync("oauth_token_response.filter_error_resync");
     }
-
-    let parsed = null;
-    try {
-      parsed = JSON.parse(bodyText);
-    } catch {
-      syncTokenOnce("oauth_token_response.parse_failed_resync");
-      return;
-    }
-
-    const originHint = details.initiator || details.originUrl || "https://auth.prolific.com";
-    handleOAuthTokenPayload(parsed, "oauth_token_response", originHint);
-  };
-
-  filter.onerror = () => {
-    try {
-      filter.disconnect();
-    } catch {
-      // ignore
-    }
-    syncTokenOnce("oauth_token_response.filter_error_resync");
-  };
+  });
 }
 
-function tapStudiesResponse(details) {
-  const normalizedURL = normalizeStudiesCollectionURL(details.url);
-  if (!normalizedURL) {
-    pushDebugLog("studies.response.capture.skip_non_collection", {
-      url: details.url,
-      request_id: details.requestId
-    });
-    return;
+function safeDisconnectResponseFilter(filter) {
+  try {
+    filter.disconnect();
+  } catch {
+    // ignore
   }
+}
 
+function tapFilteredJSONResponse(details, handlers) {
   const filterResponseData = getFilterResponseDataFunction();
   if (!filterResponseData) {
-    return;
+    return false;
   }
 
   let filter;
   try {
     filter = filterResponseData(details.requestId);
   } catch {
-    return;
+    return false;
   }
 
   const decoder = new TextDecoder("utf-8");
@@ -734,84 +1167,181 @@ function tapStudiesResponse(details) {
 
   filter.onstop = () => {
     const observedAt = nowIso();
-    pushDebugLog("studies.response.capture.stop", {
-      url: normalizedURL,
-      request_id: details.requestId
-    });
+    handlers.onStop?.(observedAt);
 
     try {
       bodyText += decoder.decode();
-      filter.disconnect();
     } catch {
       // ignore
     }
+    safeDisconnectResponseFilter(filter);
 
     let parsed = null;
     try {
       parsed = JSON.parse(bodyText);
     } catch (error) {
-      bumpCounter("studies_response_parse_error_count", 1);
-      setState({
-        studies_response_capture_ok: false,
-        studies_response_capture_reason: `failed to parse studies response JSON: ${String(error)}`,
-        studies_response_capture_last_at: observedAt
-      });
-      pushDebugLog("studies.response.parse.error", {
-        url: normalizedURL,
-        error: stringifyError(error)
-      });
+      handlers.onParseError?.(error, observedAt);
       return;
     }
 
-    postStudiesResponseToService({
-      url: normalizedURL,
-      status_code: 200,
-      observed_at: observedAt,
-      body: parsed
-    }).then(() => {
-      setState({
-        studies_response_capture_ok: true,
-        studies_response_capture_reason: "",
-        studies_response_capture_last_at: observedAt,
-        studies_last_refresh_at: observedAt,
-        studies_last_refresh_source: "extension.intercepted_response_body",
-        studies_last_refresh_url: normalizedURL,
-        studies_last_refresh_status: 200
-      });
-      bumpCounter("studies_response_ingest_success_count", 1);
-      pushDebugLog("studies.response.ingest.ok", {
-        url: normalizedURL,
-        status_code: 200
-      });
-    }).catch((error) => {
-      bumpCounter("studies_response_ingest_error_count", 1);
-      setState({
-        studies_response_capture_ok: false,
-        studies_response_capture_reason: stringifyError(error),
-        studies_response_capture_last_at: observedAt
-      });
-      pushDebugLog("studies.response.ingest.error", {
-        url: normalizedURL,
-        error: stringifyError(error)
-      });
-    });
+    handlers.onParsed?.(parsed, observedAt);
   };
 
   filter.onerror = () => {
-    try {
-      filter.disconnect();
-    } catch {
-      // ignore
-    }
-
-    setState({
-      studies_response_capture_ok: false,
-      studies_response_capture_reason: "response stream filter error",
-      studies_response_capture_last_at: nowIso()
-    });
-    bumpCounter("studies_response_filter_error_count", 1);
-    pushDebugLog("studies.response.filter.error", { url: normalizedURL });
+    safeDisconnectResponseFilter(filter);
+    handlers.onFilterError?.();
   };
+
+  return true;
+}
+
+function buildCapturedJSONResponseOptions(config) {
+  return Object.freeze({
+    normalizeURL: config.normalizeURL,
+    statusCode: config.statusCode,
+    postToService: (payload) => sendServiceCommandByName(config.commandName, payload),
+    parseErrorCounter: `${config.counterPrefix}_parse_error_count`,
+    parseErrorEvent: `${config.eventPrefix}.parse.error`,
+    ingestSuccessCounter: `${config.counterPrefix}_ingest_success_count`,
+    ingestSuccessEvent: `${config.eventPrefix}.ingest.ok`,
+    ingestErrorCounter: `${config.counterPrefix}_ingest_error_count`,
+    ingestErrorEvent: `${config.eventPrefix}.ingest.error`,
+    filterErrorCounter: `${config.counterPrefix}_filter_error_count`,
+    filterErrorEvent: `${config.eventPrefix}.filter.error`,
+    ...(config.extraHooks || {})
+  });
+}
+
+const CAPTURED_JSON_RESPONSE_OPTIONS = Object.freeze({
+  studies: buildCapturedJSONResponseOptions({
+    normalizeURL: normalizeStudiesCollectionURL,
+    statusCode: 200,
+    commandName: "studiesResponse",
+    counterPrefix: "studies_response",
+    eventPrefix: "studies.response",
+    extraHooks: {
+      onSkip: (details) => {
+        pushDebugLog("studies.response.capture.skip_non_collection", {
+          url: details.url,
+          request_id: details.requestId
+        });
+      },
+      onStop: (context) => {
+        pushDebugLog("studies.response.capture.stop", {
+          url: context.normalizedURL,
+          request_id: context.details.requestId
+        });
+      },
+      onParseError: (error, context) => {
+        setState({
+          studies_response_capture_ok: false,
+          studies_response_capture_reason: `failed to parse studies response JSON: ${String(error)}`,
+          studies_response_capture_last_at: context.observedAt
+        });
+      },
+      onIngestSuccess: (context) => {
+        setState({
+          studies_response_capture_ok: true,
+          studies_response_capture_reason: "",
+          studies_response_capture_last_at: context.observedAt
+        });
+      },
+      onIngestError: (error, context) => {
+        setState({
+          studies_response_capture_ok: false,
+          studies_response_capture_reason: stringifyError(error),
+          studies_response_capture_last_at: context.observedAt
+        });
+      },
+      onFilterError: (context) => {
+        setState({
+          studies_response_capture_ok: false,
+          studies_response_capture_reason: "response stream filter error",
+          studies_response_capture_last_at: context.observedAt
+        });
+      }
+    }
+  }),
+  submission: buildCapturedJSONResponseOptions({
+    normalizeURL: normalizeSubmissionURL,
+    statusCode: 0,
+    commandName: "submissionResponse",
+    counterPrefix: "submission_response",
+    eventPrefix: "submission.response"
+  }),
+  participantSubmissions: buildCapturedJSONResponseOptions({
+    normalizeURL: normalizeParticipantSubmissionsURL,
+    statusCode: 200,
+    commandName: "participantSubmissionsResponse",
+    counterPrefix: "participant_submissions_response",
+    eventPrefix: "participant.submissions.response"
+  })
+});
+
+function tapCapturedJSONResponse(details, options, normalizedURLOverride = "") {
+  const normalizedURL = normalizedURLOverride || options.normalizeURL(details.url);
+  if (!normalizedURL) {
+    options.onSkip?.(details);
+    return;
+  }
+
+  tapFilteredJSONResponse(details, {
+    onStop: (observedAt) => {
+      options.onStop?.({
+        details,
+        normalizedURL,
+        observedAt
+      });
+    },
+    onParseError: (error, observedAt) => {
+      bumpCounter(options.parseErrorCounter, 1);
+      pushDebugLog(options.parseErrorEvent, {
+        url: normalizedURL,
+        error: stringifyError(error)
+      });
+      options.onParseError?.(error, {
+        details,
+        normalizedURL,
+        observedAt
+      });
+    },
+    onParsed: (parsed, observedAt) => {
+      const context = {
+        details,
+        normalizedURL,
+        observedAt,
+        parsed
+      };
+
+      options.postToService({
+        url: normalizedURL,
+        status_code: options.statusCode,
+        observed_at: observedAt,
+        body: parsed
+      }).then(() => {
+        bumpCounter(options.ingestSuccessCounter, 1);
+        pushDebugLog(options.ingestSuccessEvent, { url: normalizedURL });
+        options.onIngestSuccess?.(context);
+      }).catch((error) => {
+        bumpCounter(options.ingestErrorCounter, 1);
+        pushDebugLog(options.ingestErrorEvent, {
+          url: normalizedURL,
+          error: stringifyError(error)
+        });
+        options.onIngestError?.(error, context);
+      });
+    },
+    onFilterError: () => {
+      const observedAt = nowIso();
+      bumpCounter(options.filterErrorCounter, 1);
+      pushDebugLog(options.filterErrorEvent, { url: normalizedURL });
+      options.onFilterError?.({
+        details,
+        normalizedURL,
+        observedAt
+      });
+    }
+  });
 }
 
 function normalizeHeaders(headers) {
@@ -860,12 +1390,6 @@ async function captureStudiesRequestHeaders(details) {
       captured_at: nowIso()
     };
 
-    await setState({
-      studies_last_refresh_at: payload.captured_at,
-      studies_last_refresh_source: "extension.intercepted_request",
-      studies_last_refresh_url: payload.url
-    });
-
     const fingerprint = await sha256Hex(JSON.stringify({
       url: payload.url,
       method: payload.method,
@@ -879,7 +1403,7 @@ async function captureStudiesRequestHeaders(details) {
       return;
     }
 
-    await postStudiesHeadersToService(payload);
+    await sendServiceCommandByName("studiesHeaders", payload);
     await chrome.storage.local.set({ [STUDIES_HEADERS_FINGERPRINT_KEY]: fingerprint });
 
     await setState({
@@ -920,16 +1444,8 @@ async function handleStudiesRequestCompleted(details) {
     status_code: details.statusCode || 0
   });
 
-  await setState({
-    studies_last_refresh_at: observedAt,
-    studies_last_refresh_source: "extension.intercepted_response",
-    studies_last_refresh_url: normalizedURL,
-    studies_last_refresh_status: details.statusCode || 0
-  });
-
-  let refreshPostSucceeded = false;
   try {
-    await postStudiesRefreshToService({
+    await sendServiceCommandByName("studiesRefresh", {
       observed_at: observedAt,
       source: "extension.intercepted_response",
       url: normalizedURL,
@@ -937,8 +1453,15 @@ async function handleStudiesRequestCompleted(details) {
       delayed_refresh_policy: refreshPolicy
     });
 
-    refreshPostSucceeded = true;
     await setStudiesRefreshState(true, "");
+
+    if (details.statusCode === 200) {
+      await bumpCounter("studies_refresh_post_success_count", 1);
+      await pushDebugLog("studies.refresh.post.ok", {
+        url: normalizedURL,
+        status_code: 200
+      });
+    }
   } catch (error) {
     await setStudiesRefreshState(false, stringifyError(error));
     await bumpCounter("studies_refresh_post_error_count", 1);
@@ -947,18 +1470,6 @@ async function handleStudiesRequestCompleted(details) {
       status_code: details.statusCode || 0,
       error: stringifyError(error)
     });
-  }
-
-  if (details.statusCode === 200 && refreshPostSucceeded) {
-    await bumpCounter("studies_refresh_post_success_count", 1);
-    await pushDebugLog("studies.refresh.post.ok", {
-      url: normalizedURL,
-      status_code: 200
-    });
-  }
-
-  if (details.statusCode !== 200) {
-    return;
   }
 }
 
@@ -1005,76 +1516,172 @@ function registerStudiesCompletedCapture() {
   pushDebugLog("studies.completed.listener.registered", {});
 }
 
-function registerStudiesResponseCaptureIfSupported() {
-  if (studiesResponseCaptureRegistered) {
+function registerBlockingResponseCapture(options) {
+  if (options.isRegistered()) {
     return;
   }
 
-  const filterResponseData = getFilterResponseDataFunction();
-  if (!filterResponseData) {
-    const manifest = typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getManifest
-      ? chrome.runtime.getManifest()
-      : null;
-    const manifestPermissions = manifest && Array.isArray(manifest.permissions) ? manifest.permissions : [];
-
-    setState({
-      studies_response_capture_supported: false,
-      studies_response_capture_registered: false,
-      studies_response_capture_ok: null,
-      studies_response_capture_reason: "filterResponseData not supported",
-      studies_response_capture_checked_at: nowIso()
-    });
-    pushDebugLog("studies.response.capture.unsupported", {
-      reason: "filterResponseData not supported",
-      manifest_version: manifest ? manifest.manifest_version : "unknown",
-      permissions: manifestPermissions
-    });
+  if (!getFilterResponseDataFunction()) {
+    if (options.onUnsupported) {
+      options.onUnsupported();
+    }
     return;
   }
 
   if (!chrome.webRequest || !chrome.webRequest.onBeforeRequest) {
+    if (options.onListenerUnavailable) {
+      options.onListenerUnavailable();
+    }
     return;
   }
 
   try {
     chrome.webRequest.onBeforeRequest.addListener(
       (details) => {
-        const normalizedURL = normalizeStudiesCollectionURL(details.url);
-        if (!normalizedURL) {
-          pushDebugLog("studies.response.capture.before_request.skip_non_collection", {
-            url: details.url,
-            request_id: details.requestId
-          });
-          return {};
-        }
-        bumpCounter("studies_response_before_request_count", 1);
-        pushDebugLog("studies.response.capture.before_request", { url: normalizedURL, request_id: details.requestId });
-        tapStudiesResponse(details);
+        options.onBeforeRequest(details);
         return {};
       },
-      { urls: [STUDIES_REQUEST_PATTERN] },
+      { urls: options.urls },
       ["blocking"]
     );
 
-    studiesResponseCaptureRegistered = true;
-    setState({
-      studies_response_capture_supported: true,
-      studies_response_capture_registered: true,
-      studies_response_capture_ok: null,
-      studies_response_capture_reason: "",
-      studies_response_capture_checked_at: nowIso()
-    });
-    pushDebugLog("studies.response.capture.registered", {});
+    options.markRegistered();
+    if (options.onRegistered) {
+      options.onRegistered();
+    }
   } catch (error) {
-    setState({
-      studies_response_capture_supported: false,
-      studies_response_capture_registered: false,
-      studies_response_capture_ok: false,
-      studies_response_capture_reason: stringifyError(error),
-      studies_response_capture_checked_at: nowIso()
-    });
-    pushDebugLog("studies.response.capture.register_error", { error: stringifyError(error) });
+    if (options.onRegisterError) {
+      options.onRegisterError(error);
+    }
   }
+}
+
+function registerJSONBodyResponseCapture(options) {
+  registerBlockingResponseCapture({
+    isRegistered: options.isRegistered,
+    markRegistered: options.markRegistered,
+    urls: options.urls,
+    onUnsupported: () => {
+      pushDebugLog(options.unsupportedEvent, {
+        reason: "filterResponseData not supported"
+      });
+    },
+    onListenerUnavailable: () => {
+      pushDebugLog(options.unavailableEvent, {});
+    },
+    onBeforeRequest: (details) => {
+      const normalizedURL = options.normalizeURL(details.url);
+      if (!normalizedURL) {
+        return;
+      }
+      bumpCounter(options.beforeRequestCounter, 1);
+      tapCapturedJSONResponse(details, options.captureOptions, normalizedURL);
+    },
+    onRegistered: () => {
+      pushDebugLog(options.registeredEvent, options.registeredDetails || {});
+    },
+    onRegisterError: (error) => {
+      pushDebugLog(options.registerErrorEvent, { error: stringifyError(error) });
+    }
+  });
+}
+
+function registerStudiesResponseCaptureIfSupported() {
+  registerBlockingResponseCapture({
+    isRegistered: () => studiesResponseCaptureRegistered,
+    markRegistered: () => {
+      studiesResponseCaptureRegistered = true;
+    },
+    urls: [STUDIES_REQUEST_PATTERN],
+    onUnsupported: () => {
+      const manifest = typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getManifest
+        ? chrome.runtime.getManifest()
+        : null;
+      const manifestPermissions = manifest && Array.isArray(manifest.permissions) ? manifest.permissions : [];
+
+      setState({
+        studies_response_capture_supported: false,
+        studies_response_capture_registered: false,
+        studies_response_capture_ok: null,
+        studies_response_capture_reason: "filterResponseData not supported",
+        studies_response_capture_checked_at: nowIso()
+      });
+      pushDebugLog("studies.response.capture.unsupported", {
+        reason: "filterResponseData not supported",
+        manifest_version: manifest ? manifest.manifest_version : "unknown",
+        permissions: manifestPermissions
+      });
+    },
+    onBeforeRequest: (details) => {
+      const normalizedURL = normalizeStudiesCollectionURL(details.url);
+      if (!normalizedURL) {
+        pushDebugLog("studies.response.capture.before_request.skip_non_collection", {
+          url: details.url,
+          request_id: details.requestId
+        });
+        return;
+      }
+      bumpCounter("studies_response_before_request_count", 1);
+      pushDebugLog("studies.response.capture.before_request", { url: normalizedURL, request_id: details.requestId });
+      tapCapturedJSONResponse(details, CAPTURED_JSON_RESPONSE_OPTIONS.studies, normalizedURL);
+    },
+    onRegistered: () => {
+      setState({
+        studies_response_capture_supported: true,
+        studies_response_capture_registered: true,
+        studies_response_capture_ok: null,
+        studies_response_capture_reason: "",
+        studies_response_capture_checked_at: nowIso()
+      });
+      pushDebugLog("studies.response.capture.registered", {});
+    },
+    onRegisterError: (error) => {
+      setState({
+        studies_response_capture_supported: false,
+        studies_response_capture_registered: false,
+        studies_response_capture_ok: false,
+        studies_response_capture_reason: stringifyError(error),
+        studies_response_capture_checked_at: nowIso()
+      });
+      pushDebugLog("studies.response.capture.register_error", { error: stringifyError(error) });
+    }
+  });
+}
+
+function registerSubmissionResponseCaptureIfSupported() {
+  registerJSONBodyResponseCapture({
+    isRegistered: () => submissionResponseCaptureRegistered,
+    markRegistered: () => {
+      submissionResponseCaptureRegistered = true;
+    },
+    urls: SUBMISSION_PATTERNS,
+    normalizeURL: normalizeSubmissionURL,
+    beforeRequestCounter: "submission_response_before_request_count",
+    captureOptions: CAPTURED_JSON_RESPONSE_OPTIONS.submission,
+    unsupportedEvent: "submission.response.capture.unsupported",
+    unavailableEvent: "submission.response.capture.listener.unavailable",
+    registeredEvent: "submission.response.capture.registered",
+    registeredDetails: { patterns: SUBMISSION_PATTERNS },
+    registerErrorEvent: "submission.response.capture.register_error"
+  });
+}
+
+function registerParticipantSubmissionsResponseCaptureIfSupported() {
+  registerJSONBodyResponseCapture({
+    isRegistered: () => participantSubmissionsResponseCaptureRegistered,
+    markRegistered: () => {
+      participantSubmissionsResponseCaptureRegistered = true;
+    },
+    urls: [PARTICIPANT_SUBMISSIONS_PATTERN],
+    normalizeURL: normalizeParticipantSubmissionsURL,
+    beforeRequestCounter: "participant_submissions_response_before_request_count",
+    captureOptions: CAPTURED_JSON_RESPONSE_OPTIONS.participantSubmissions,
+    unsupportedEvent: "participant.submissions.response.capture.unsupported",
+    unavailableEvent: "participant.submissions.response.capture.listener.unavailable",
+    registeredEvent: "participant.submissions.response.capture.registered",
+    registeredDetails: { patterns: [PARTICIPANT_SUBMISSIONS_PATTERN] },
+    registerErrorEvent: "participant.submissions.response.capture.register_error"
+  });
 }
 
 function registerOAuthCompletedFallbackListener() {
@@ -1089,7 +1696,7 @@ function registerOAuthCompletedFallbackListener() {
 
   chrome.webRequest.onCompleted.addListener(
     () => {
-      syncTokenOnce("oauth_token_completed_resync");
+      requestTokenSync("oauth_token_completed_resync");
     },
     { urls: [OAUTH_TOKEN_PATTERN] }
   );
@@ -1099,42 +1706,35 @@ function registerOAuthCompletedFallbackListener() {
 }
 
 function registerOAuthResponseCaptureIfSupported() {
-  if (oauthResponseCaptureRegistered) {
-    return;
-  }
-
-  const filterResponseData = getFilterResponseDataFunction();
-  if (!filterResponseData) {
-    pushDebugLog("oauth.response.capture.unsupported", {
-      reason: "filterResponseData not supported"
-    });
-    return;
-  }
-
-  if (!chrome.webRequest || !chrome.webRequest.onBeforeRequest) {
-    pushDebugLog("oauth.response.capture.listener.unavailable", {});
-    return;
-  }
-
-  try {
-    chrome.webRequest.onBeforeRequest.addListener(
-      (details) => {
-        tapOAuthTokenResponse(details);
-        return {};
-      },
-      { urls: [OAUTH_TOKEN_PATTERN] },
-      ["blocking"]
-    );
-    oauthResponseCaptureRegistered = true;
-    pushDebugLog("oauth.response.capture.registered", {});
-  } catch (error) {
-    setState({
-      oauth_response_capture_supported: false,
-      oauth_response_capture_reason: stringifyError(error),
-      oauth_response_capture_checked_at: nowIso()
-    });
-    pushDebugLog("oauth.response.capture.register_error", { error: stringifyError(error) });
-  }
+  registerBlockingResponseCapture({
+    isRegistered: () => oauthResponseCaptureRegistered,
+    markRegistered: () => {
+      oauthResponseCaptureRegistered = true;
+    },
+    urls: [OAUTH_TOKEN_PATTERN],
+    onUnsupported: () => {
+      pushDebugLog("oauth.response.capture.unsupported", {
+        reason: "filterResponseData not supported"
+      });
+    },
+    onListenerUnavailable: () => {
+      pushDebugLog("oauth.response.capture.listener.unavailable", {});
+    },
+    onBeforeRequest: (details) => {
+      tapOAuthTokenResponse(details);
+    },
+    onRegistered: () => {
+      pushDebugLog("oauth.response.capture.registered", {});
+    },
+    onRegisterError: (error) => {
+      setState({
+        oauth_response_capture_supported: false,
+        oauth_response_capture_reason: stringifyError(error),
+        oauth_response_capture_checked_at: nowIso()
+      });
+      pushDebugLog("oauth.response.capture.register_error", { error: stringifyError(error) });
+    }
+  });
 }
 
 function schedule() {
@@ -1146,31 +1746,38 @@ function registerCaptureListeners() {
   registerStudiesHeaderCapture();
   registerStudiesCompletedCapture();
   registerStudiesResponseCaptureIfSupported();
+  registerSubmissionResponseCaptureIfSupported();
+  registerParticipantSubmissionsResponseCaptureIfSupported();
   registerOAuthCompletedFallbackListener();
   registerOAuthResponseCaptureIfSupported();
 }
 
-function boot(trigger, logEvent) {
+async function boot(trigger, logEvent) {
   if (logEvent) {
-    pushDebugLog(logEvent, {});
+    await pushDebugLog(logEvent, {});
   }
+  ensureServiceSocketConnected(`boot:${trigger}`);
   schedule();
   registerCaptureListeners();
-  syncTokenOnce(trigger);
+  await requestTokenSync(trigger);
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  boot("onInstalled", "runtime.installed");
+  boot("onInstalled", "runtime.installed").catch(() => {
+    // Keep extension startup resilient.
+  });
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  boot("onStartup", "runtime.startup");
+  boot("onStartup", "runtime.startup").catch(() => {
+    // Keep extension startup resilient.
+  });
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "oidc_sync") {
     pushDebugLog("alarm.fired", { name: alarm.name });
-    syncTokenOnce("alarm");
+    requestTokenSync("alarm");
   }
 });
 
@@ -1180,14 +1787,45 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
   if (tab.url.includes(".prolific.com")) {
     pushDebugLog("tab.updated.prolific", { tab_id: tabId });
-    syncTokenOnce("tabs.onUpdated");
+    requestTokenSync("tabs.onUpdated");
   }
 });
 
-chrome.tabs.onRemoved.addListener(() => {
-  pushDebugLog("tab.removed", {});
-  syncTokenOnce("tabs.onRemoved");
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (typeof tabId === "number" && tabId === lastAutoOpenedTabId) {
+    lastAutoOpenedTabId = null;
+  }
+  pushDebugLog("tab.removed", { tab_id: tabId });
+  requestTokenSync("tabs.onRemoved");
 });
+
+function buildRefreshSettingsResponse(refreshPolicy, autoOpenEnabled) {
+  const settings = {
+    studies_refresh_min_delay_seconds: refreshPolicy.minimum_delay_seconds,
+    studies_refresh_average_delay_seconds: refreshPolicy.average_delay_seconds,
+    studies_refresh_spread_seconds: refreshPolicy.spread_seconds,
+    studies_refresh_cycle_seconds: refreshPolicy.cycle_seconds
+  };
+  if (typeof autoOpenEnabled === "boolean") {
+    settings.auto_open_prolific_tab = autoOpenEnabled;
+  }
+  return settings;
+}
+
+function sendRuntimeError(sendResponse, error) {
+  sendResponse({ ok: false, error: stringifyError(error) });
+}
+
+function runMessageTask(sendResponse, task) {
+  (async () => {
+    try {
+      await task();
+    } catch (error) {
+      sendRuntimeError(sendResponse, error);
+    }
+  })();
+  return true;
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.action === "getState") {
@@ -1211,88 +1849,112 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       );
       sendResponse({
         ok: true,
-        settings: {
-          auto_open_prolific_tab: data[AUTO_OPEN_PROLIFIC_TAB_KEY] !== false,
-          studies_refresh_min_delay_seconds: refreshPolicy.minimum_delay_seconds,
-          studies_refresh_average_delay_seconds: refreshPolicy.average_delay_seconds,
-          studies_refresh_spread_seconds: refreshPolicy.spread_seconds,
-          studies_refresh_cycle_seconds: refreshPolicy.cycle_seconds
-        }
+        settings: buildRefreshSettingsResponse(
+          refreshPolicy,
+          data[AUTO_OPEN_PROLIFIC_TAB_KEY] !== false
+        )
       });
     });
     return true;
   }
 
-  if (message && message.action === "setAutoOpen") {
-    const enabled = Boolean(message.enabled);
-    chrome.storage.local.set({ [AUTO_OPEN_PROLIFIC_TAB_KEY]: enabled }, () => {
-      setState({ auto_open_enabled: enabled });
-      pushDebugLog("settings.auto_open.updated", { enabled });
-      sendResponse({ ok: true, auto_open_prolific_tab: enabled });
+  if (message && message.action === "getDashboardData") {
+    return runMessageTask(sendResponse, async () => {
+      const liveLimit = clampDashboardLimit(
+        message.live_limit,
+        DASHBOARD_DEFAULT_STUDIES_LIMIT
+      );
+      const eventsLimit = clampDashboardLimit(
+        message.events_limit,
+        DASHBOARD_DEFAULT_EVENTS_LIMIT
+      );
+      const submissionsLimit = clampDashboardLimit(
+        message.submissions_limit,
+        DASHBOARD_DEFAULT_SUBMISSIONS_LIMIT
+      );
+
+      const dashboard = await loadDashboardData(liveLimit, eventsLimit, submissionsLimit);
+      sendResponse({ ok: true, dashboard });
     });
-    return true;
+  }
+
+  if (message && message.action === "setAutoOpen") {
+    return runMessageTask(sendResponse, async () => {
+      const enabled = Boolean(message.enabled);
+      await storageSetLocal({ [AUTO_OPEN_PROLIFIC_TAB_KEY]: enabled });
+      await setState({ auto_open_enabled: enabled });
+      await pushDebugLog("settings.auto_open.updated", { enabled });
+
+      sendResponse({ ok: true, auto_open_prolific_tab: enabled });
+
+      if (!enabled) {
+        lastAutoOpenedTabId = null;
+        return;
+      }
+
+      const tabs = await queryProlificTabs();
+      if (tabs.length === 0) {
+        await maybeAutoOpenProlificTab("settings.auto_open.enabled", tabs);
+        return;
+      }
+
+      await requestTokenSync("settings.auto_open.enabled");
+    });
   }
 
   if (message && message.action === "setRefreshDelays") {
-    (async () => {
-      try {
-        const refreshPolicy = normalizeStudiesRefreshPolicy(
-          message.minimum_delay_seconds,
-          message.average_delay_seconds,
-          message.spread_seconds
-        );
+    return runMessageTask(sendResponse, async () => {
+      const refreshPolicy = normalizeStudiesRefreshPolicy(
+        message.minimum_delay_seconds,
+        message.average_delay_seconds,
+        message.spread_seconds
+      );
 
-        await storageSetLocal({
-          [STUDIES_REFRESH_MIN_DELAY_SECONDS_KEY]: refreshPolicy.minimum_delay_seconds,
-          [STUDIES_REFRESH_AVERAGE_DELAY_SECONDS_KEY]: refreshPolicy.average_delay_seconds,
-          [STUDIES_REFRESH_SPREAD_SECONDS_KEY]: refreshPolicy.spread_seconds
+      await storageSetLocal({
+        [STUDIES_REFRESH_MIN_DELAY_SECONDS_KEY]: refreshPolicy.minimum_delay_seconds,
+        [STUDIES_REFRESH_AVERAGE_DELAY_SECONDS_KEY]: refreshPolicy.average_delay_seconds,
+        [STUDIES_REFRESH_SPREAD_SECONDS_KEY]: refreshPolicy.spread_seconds
+      });
+
+      sendResponse({
+        ok: true,
+        settings: buildRefreshSettingsResponse(refreshPolicy)
+      });
+
+      sendServiceCommandByName("scheduleDelayedRefresh", {
+        policy: refreshPolicy,
+        trigger: "extension.settings.save"
+      })
+        .then(() => {
+          pushDebugLog("settings.studies_refresh_policy.schedule_ok", refreshPolicy);
+        })
+        .catch((error) => {
+          pushDebugLog("settings.studies_refresh_policy.schedule_error", { error: stringifyError(error) });
         });
 
-        sendResponse({
-          ok: true,
-          settings: {
-            studies_refresh_min_delay_seconds: refreshPolicy.minimum_delay_seconds,
-            studies_refresh_average_delay_seconds: refreshPolicy.average_delay_seconds,
-            studies_refresh_spread_seconds: refreshPolicy.spread_seconds,
-            studies_refresh_cycle_seconds: refreshPolicy.cycle_seconds
-          }
-        });
-
-        scheduleDelayedRefreshCycle(refreshPolicy, "extension.settings.save")
-          .then(() => {
-            pushDebugLog("settings.studies_refresh_policy.schedule_ok", refreshPolicy);
-          })
-          .catch((error) => {
-            pushDebugLog("settings.studies_refresh_policy.schedule_error", { error: stringifyError(error) });
-          });
-
-        setState({
-          studies_refresh_min_delay_seconds: refreshPolicy.minimum_delay_seconds,
-          studies_refresh_average_delay_seconds: refreshPolicy.average_delay_seconds,
-          studies_refresh_spread_seconds: refreshPolicy.spread_seconds,
-          studies_refresh_cycle_seconds: refreshPolicy.cycle_seconds
-        });
-        pushDebugLog("settings.studies_refresh_policy.updated", refreshPolicy);
-      } catch (error) {
-        sendResponse({ ok: false, error: stringifyError(error) });
-      }
-    })();
-    return true;
+      setState({
+        studies_refresh_min_delay_seconds: refreshPolicy.minimum_delay_seconds,
+        studies_refresh_average_delay_seconds: refreshPolicy.average_delay_seconds,
+        studies_refresh_spread_seconds: refreshPolicy.spread_seconds,
+        studies_refresh_cycle_seconds: refreshPolicy.cycle_seconds
+      });
+      pushDebugLog("settings.studies_refresh_policy.updated", refreshPolicy);
+    });
   }
 
   if (message && message.action === "clearDebugLogs") {
-    updateState(() => ({
-      debug_logs: [],
-      debug_logs_cleared_at: nowIso()
-    })).then(() => {
+    return runMessageTask(sendResponse, async () => {
+      await updateState(() => ({
+        debug_logs: [],
+        debug_logs_cleared_at: nowIso()
+      }));
       sendResponse({ ok: true });
-    }).catch((error) => {
-      sendResponse({ ok: false, error: stringifyError(error) });
     });
-    return true;
   }
 
   return false;
 });
 
-boot("startup-load", "extension.init");
+boot("startup-load", "extension.init").catch(() => {
+  // Keep extension startup resilient.
+});

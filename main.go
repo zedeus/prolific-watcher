@@ -16,9 +16,10 @@ func main() {
 	tokenStore := NewTokenStore(db)
 	headersStore := NewStudiesHeaderStore(db)
 	studiesStore := NewStudiesStore(db)
+	submissionsStore := NewSubmissionsStore(db)
 	stateStore := NewServiceStateStore(db)
 
-	service := NewService(tokenStore, headersStore, studiesStore, stateStore)
+	service := NewService(tokenStore, headersStore, studiesStore, submissionsStore, stateStore)
 
 	mux := http.NewServeMux()
 	service.RegisterRoutes(mux)

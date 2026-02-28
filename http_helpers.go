@@ -28,18 +28,6 @@ func setExtensionCORSHeaders(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
 
-func decodeJSONBody(r *http.Request, dst any) error {
-	return json.NewDecoder(r.Body).Decode(dst)
-}
-
-func decodeJSONBodyOrBadRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if err := decodeJSONBody(r, dst); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body", nil)
-		return false
-	}
-	return true
-}
-
 func parseIntQuery(r *http.Request, key string, fallback, min, max int) (int, error) {
 	raw := r.URL.Query().Get(key)
 	if raw == "" {

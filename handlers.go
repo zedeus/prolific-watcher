@@ -3,8 +3,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"io"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -117,6 +118,51 @@ func (s *Service) handleStudyEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func normalizeSubmissionPhaseQueryOrBadRequest(w http.ResponseWriter, raw string) (string, bool) {
+	phase := strings.ToLower(strings.TrimSpace(raw))
+	if phase == "" || phase == "all" {
+		return "all", true
+	}
+
+	if phase == SubmissionPhaseSubmitting || phase == SubmissionPhaseSubmitted {
+		return phase, true
+	}
+
+	writeError(w, http.StatusBadRequest, "phase must be one of: all, submitting, submitted", nil)
+	return "", false
+}
+
+func (s *Service) handleSubmissions(w http.ResponseWriter, r *http.Request) {
+	if s.submissionsStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "submissions store not configured", nil)
+		return
+	}
+
+	phase, ok := normalizeSubmissionPhaseQueryOrBadRequest(w, r.URL.Query().Get("phase"))
+	if !ok {
+		return
+	}
+	limit, err := parseIntQuery(r, "limit", defaultCurrentSubmissions, 1, maxCurrentSubmissions)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+
+	submissions, err := s.submissionsStore.GetCurrentSubmissions(limit, phase)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load submissions", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"results": submissions,
+		"meta": map[string]any{
+			"count": len(submissions),
+			"phase": phase,
+		},
+	})
+}
+
 func (s *Service) handleStudiesRefresh(w http.ResponseWriter, r *http.Request) {
 	if s.stateStore == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"has_refresh": false})
@@ -143,150 +189,13 @@ func (s *Service) handleStudiesRefresh(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Service) handleReceiveToken(w http.ResponseWriter, r *http.Request) {
-	var payload StoredToken
-	if !decodeJSONBodyOrBadRequest(w, r, &payload) {
-		return
-	}
-	if payload.AccessToken == "" {
-		writeError(w, http.StatusBadRequest, "missing access_token", nil)
-		return
-	}
-	if err := s.tokenStore.Set(payload); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to persist token", nil)
-		return
-	}
-
-	logInfo("token.received", "origin", payload.Origin, "key", payload.Key, "browser_info", payload.BrowserInfo)
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "token stored"})
-}
-
 type clearTokenRequest struct {
 	Reason string `json:"reason"`
-}
-
-func (s *Service) handleClearToken(w http.ResponseWriter, r *http.Request) {
-	var payload clearTokenRequest
-	if err := decodeJSONBody(r, &payload); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "invalid JSON body", nil)
-		return
-	}
-
-	if err := s.tokenStore.Clear(); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to clear token", err)
-		return
-	}
-
-	reason := strings.TrimSpace(payload.Reason)
-	if reason == "" {
-		reason = "extension.clear_token"
-	}
-	s.cancelDelayedServiceRefresh(reason)
-
-	logInfo("token.cleared", "reason", reason)
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "reason": reason})
-}
-
-func (s *Service) handleReceiveStudiesHeaders(w http.ResponseWriter, r *http.Request) {
-	var payload StudiesHeadersCapture
-	if !decodeJSONBodyOrBadRequest(w, r, &payload) {
-		return
-	}
-
-	normalizedURL, ok := normalizeStudiesURLOrBadRequest(w, payload.URL)
-	if !ok {
-		return
-	}
-	payload.URL = normalizedURL
-
-	if len(payload.Headers) == 0 {
-		writeError(w, http.StatusBadRequest, "headers cannot be empty", nil)
-		return
-	}
-	if len(payload.Headers) > 250 {
-		writeError(w, http.StatusBadRequest, "too many headers in payload", nil)
-		return
-	}
-
-	if err := s.headersStore.Set(payload); err != nil {
-		logWarn("studies.headers.persist_failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to persist studies headers", err)
-		return
-	}
-
-	logInfo("studies.headers.received", "url", payload.URL, "method", payload.Method, "count", len(payload.Headers))
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "studies headers stored", "count": len(payload.Headers)})
-}
-
-func (s *Service) handleReceiveStudiesRefresh(w http.ResponseWriter, r *http.Request) {
-	var payload StudiesRefreshUpdate
-	if !decodeJSONBodyOrBadRequest(w, r, &payload) {
-		return
-	}
-
-	if payload.URL != "" {
-		normalizedURL, ok := normalizeStudiesURLOrBadRequest(w, payload.URL)
-		if !ok {
-			return
-		}
-		payload.URL = normalizedURL
-	}
-
-	if err := s.markStudiesRefresh(payload.ObservedAt, payload.Source, payload.URL, payload.StatusCode); err != nil {
-		logWarn("studies.refresh.persist_failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to persist studies refresh", err)
-		return
-	}
-
-	s.publishStudiesRefreshEvent(payload)
-	logInfo("studies.refresh.received", "source", payload.Source, "status_code", payload.StatusCode, "url", payload.URL, "observed_at", payload.ObservedAt)
-	if shouldScheduleDelayedRefresh(payload.Source, payload.StatusCode) {
-		authReady, err := s.canScheduleDelayedRefresh()
-		if err != nil {
-			logWarn("refresh.delayed.schedule_skipped", "source", payload.Source, "reason", "token_lookup_failed", "error", err)
-		} else if !authReady {
-			logInfo("refresh.delayed.schedule_skipped", "source", payload.Source, "reason", "not_authenticated")
-		} else {
-			s.scheduleDelayedServiceRefresh(payload.Source, payload.DelayedRefreshPolicy)
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
 type delayedRefreshScheduleRequest struct {
 	Policy  DelayedRefreshPolicy `json:"policy"`
 	Trigger string               `json:"trigger"`
-}
-
-func (s *Service) handleScheduleDelayedRefresh(w http.ResponseWriter, r *http.Request) {
-	var payload delayedRefreshScheduleRequest
-	if !decodeJSONBodyOrBadRequest(w, r, &payload) {
-		return
-	}
-
-	trigger := strings.TrimSpace(payload.Trigger)
-	if trigger == "" {
-		trigger = "extension.policy_update"
-	}
-
-	authReady, err := s.canScheduleDelayedRefresh()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to verify token state", err)
-		return
-	}
-	if !authReady {
-		s.cancelDelayedServiceRefresh("extension.schedule.request_while_signed_out")
-		writeJSON(w, http.StatusOK, map[string]any{
-			"success":   true,
-			"trigger":   trigger,
-			"scheduled": false,
-			"reason":    "not authenticated",
-		})
-		return
-	}
-
-	s.scheduleDelayedServiceRefresh(trigger, &payload.Policy)
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "trigger": trigger})
 }
 
 type interceptedStudiesResponsePayload struct {
@@ -296,61 +205,325 @@ type interceptedStudiesResponsePayload struct {
 	Body       json.RawMessage `json:"body"`
 }
 
-func normalizeStudiesURLOrBadRequest(w http.ResponseWriter, raw string) (string, bool) {
-	normalizedURL, ok := normalizeStudiesCollectionURL(raw)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "url must target internal studies endpoint", nil)
-		return "", false
-	}
-	return normalizedURL, true
+type interceptedSubmissionResponsePayload struct {
+	URL        string          `json:"url"`
+	StatusCode int             `json:"status_code"`
+	ObservedAt time.Time       `json:"observed_at"`
+	Body       json.RawMessage `json:"body"`
 }
 
-func (s *Service) handleReceiveStudiesResponse(w http.ResponseWriter, r *http.Request) {
-	var payload interceptedStudiesResponsePayload
-	if !decodeJSONBodyOrBadRequest(w, r, &payload) {
-		return
+type interceptedParticipantSubmissionsResponsePayload struct {
+	URL        string          `json:"url"`
+	StatusCode int             `json:"status_code"`
+	ObservedAt time.Time       `json:"observed_at"`
+	Body       json.RawMessage `json:"body"`
+}
+
+func normalizeSubmissionURL(raw string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil {
+		return "", false
+	}
+	if parsed.Scheme != "https" || strings.ToLower(strings.TrimSpace(parsed.Hostname())) != internalStudiesHost {
+		return "", false
 	}
 
-	normalizedURL, ok := normalizeStudiesURLOrBadRequest(w, payload.URL)
-	if !ok {
-		return
-	}
-	payload.URL = normalizedURL
-
-	if len(payload.Body) == 0 {
-		writeError(w, http.StatusBadRequest, "body cannot be empty", nil)
-		return
+	path := parsed.Path
+	if path == "/api/v1/submissions/reserve/" {
+		parsed.Path = "/api/v1/submissions/reserve/"
+		parsed.RawQuery = ""
+		return parsed.String(), true
 	}
 
-	if payload.StatusCode != 0 && payload.StatusCode != http.StatusOK {
-		if err := s.markStudiesRefresh(payload.ObservedAt, "extension.intercepted_response", payload.URL, payload.StatusCode); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to persist studies refresh status", nil)
-			return
-		}
-		s.publishStudiesRefreshEvent(StudiesRefreshUpdate{
-			ObservedAt: payload.ObservedAt,
-			Source:     "extension.intercepted_response",
-			URL:        payload.URL,
-			StatusCode: payload.StatusCode,
-		})
-		writeJSON(w, http.StatusOK, map[string]any{"success": true})
-		return
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 5 &&
+		parts[0] == "api" &&
+		parts[1] == "v1" &&
+		parts[2] == "submissions" &&
+		parts[3] != "" &&
+		parts[4] == "transition" {
+		parsed.Path = "/api/v1/submissions/" + parts[3] + "/transition/"
+		parsed.RawQuery = ""
+		return parsed.String(), true
 	}
 
-	normalized, availability, err := s.ingestStudiesPayload(payload.Body, payload.ObservedAt, "extension.intercepted_response", payload.URL, http.StatusOK)
+	return "", false
+}
+
+func normalizeParticipantSubmissionsURL(raw string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil {
+		return "", false
+	}
+	if parsed.Scheme != "https" || strings.ToLower(strings.TrimSpace(parsed.Hostname())) != internalStudiesHost {
+		return "", false
+	}
+
+	path := strings.TrimSpace(parsed.Path)
+	if path != internalParticipantSubmissionsPath && path != strings.TrimSuffix(internalParticipantSubmissionsPath, "/") {
+		return "", false
+	}
+
+	parsed.Path = internalParticipantSubmissionsPath
+	return parsed.String(), true
+}
+
+type submissionStudyPayload struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type submissionResponseBody struct {
+	ID            string                 `json:"id"`
+	Status        string                 `json:"status"`
+	ParticipantID string                 `json:"participant_id"`
+	Participant   string                 `json:"participant"`
+	StudyID       string                 `json:"study_id"`
+	Study         submissionStudyPayload `json:"study"`
+	StudyURL      string                 `json:"study_url"`
+}
+
+type participantSubmissionLink struct {
+	Href  *string `json:"href"`
+	Title string  `json:"title"`
+}
+
+type participantSubmissionsLinks struct {
+	Self     participantSubmissionLink `json:"self"`
+	Next     participantSubmissionLink `json:"next"`
+	Previous participantSubmissionLink `json:"previous"`
+	Last     participantSubmissionLink `json:"last"`
+}
+
+type participantSubmissionsMeta struct {
+	Count                 int        `json:"count"`
+	TotalEarned           int        `json:"total_earned"`
+	TotalEarnedByCurrency []apiMoney `json:"total_earned_by_currency"`
+	TotalApproved         int        `json:"total_approved"`
+	TotalScreenedOut      int        `json:"total_screened_out"`
+}
+
+type participantSubmissionInstitution struct {
+	Name *string `json:"name"`
+	Logo *string `json:"logo"`
+	Link string  `json:"link"`
+}
+
+type participantSubmissionPublisher struct {
+	ID          string                           `json:"id"`
+	Name        string                           `json:"name"`
+	Country     string                           `json:"country"`
+	Institution participantSubmissionInstitution `json:"institution"`
+}
+
+type participantSubmissionStudy struct {
+	ID                         string                         `json:"id"`
+	DynamicPayment             json.RawMessage                `json:"dynamic_payment"`
+	IsTrialStudy               bool                           `json:"is_trial_study"`
+	Name                       string                         `json:"name"`
+	Publisher                  participantSubmissionPublisher `json:"publisher"`
+	Researcher                 participantSubmissionPublisher `json:"researcher"`
+	TermsAndConditionsRequired []json.RawMessage              `json:"terms_and_conditions_required"`
+}
+
+type participantSubmissionListItem struct {
+	ID                       string                     `json:"id"`
+	Status                   string                     `json:"status"`
+	StartedAt                *string                    `json:"started_at"`
+	CompletedAt              *string                    `json:"completed_at"`
+	TimeTaken                string                     `json:"time_taken"`
+	DynamicPaymentPercentage *float64                   `json:"dynamic_payment_percentage"`
+	HasSiblings              bool                       `json:"has_siblings"`
+	IsComplete               bool                       `json:"is_complete"`
+	ReturnRequested          json.RawMessage            `json:"return_requested"`
+	ScreenedOutPayments      []apiMoney                 `json:"screened_out_payments"`
+	StudyCode                *string                    `json:"study_code"`
+	SubmissionAdjustments    []apiMoney                 `json:"submission_adjustments"`
+	SubmissionBonuses        []apiMoney                 `json:"submission_bonuses"`
+	SubmissionReward         apiMoney                   `json:"submission_reward"`
+	Study                    participantSubmissionStudy `json:"study"`
+	ParticipantID            string                     `json:"participant_id,omitempty"`
+	Participant              string                     `json:"participant,omitempty"`
+	StudyID                  string                     `json:"study_id,omitempty"`
+	StudyURL                 string                     `json:"study_url,omitempty"`
+}
+
+type participantSubmissionsListResponse struct {
+	Results []json.RawMessage            `json:"results"`
+	Links   *participantSubmissionsLinks `json:"_links,omitempty"`
+	Meta    *participantSubmissionsMeta  `json:"meta,omitempty"`
+}
+
+func parseStudyIDFromSubmissionURL(studyURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(studyURL))
+	if err != nil || parsed == nil {
+		return ""
+	}
+
+	studyID := strings.TrimSpace(parsed.Query().Get("STUDY_ID"))
+	if studyID != "" {
+		return studyID
+	}
+	return strings.TrimSpace(parsed.Query().Get("study_id"))
+}
+
+func buildSubmissionSnapshot(
+	submissionID string,
+	status string,
+	participantID string,
+	studyID string,
+	studyName string,
+	payload json.RawMessage,
+) (*SubmissionSnapshot, error) {
+	submissionID = strings.TrimSpace(submissionID)
+	if submissionID == "" {
+		return nil, errors.New("submission response missing id")
+	}
+
+	status = strings.ToUpper(strings.TrimSpace(status))
+	if status == "" {
+		return nil, errors.New("submission response missing status")
+	}
+
+	participantID = strings.TrimSpace(participantID)
+	studyID = strings.TrimSpace(studyID)
+	studyName = strings.TrimSpace(studyName)
+	if studyName == "" {
+		studyName = "Unknown Study"
+	}
+	if studyID == "" {
+		studyID = "unknown"
+	}
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+
+	return &SubmissionSnapshot{
+		SubmissionID:  submissionID,
+		StudyID:       studyID,
+		StudyName:     studyName,
+		ParticipantID: participantID,
+		Status:        status,
+		Phase:         normalizedSubmissionPhase(status),
+		Payload:       append(json.RawMessage(nil), payload...),
+	}, nil
+}
+
+func normalizeSubmissionSnapshot(body []byte) (*SubmissionSnapshot, error) {
+	var parsed submissionResponseBody
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+
+	participantID := strings.TrimSpace(parsed.ParticipantID)
+	if participantID == "" {
+		participantID = strings.TrimSpace(parsed.Participant)
+	}
+
+	studyID := strings.TrimSpace(parsed.StudyID)
+	if studyID == "" {
+		studyID = strings.TrimSpace(parsed.Study.ID)
+	}
+	if studyID == "" {
+		studyID = parseStudyIDFromSubmissionURL(parsed.StudyURL)
+	}
+
+	return buildSubmissionSnapshot(
+		parsed.ID,
+		parsed.Status,
+		participantID,
+		studyID,
+		parsed.Study.Name,
+		append(json.RawMessage(nil), body...),
+	)
+}
+
+func normalizeSubmissionSnapshotFromParticipantListItem(itemPayload json.RawMessage) (*SubmissionSnapshot, error) {
+	var item participantSubmissionListItem
+	if err := json.Unmarshal(itemPayload, &item); err != nil {
+		return nil, fmt.Errorf("unmarshal participant submission item: %w", err)
+	}
+
+	participantID := strings.TrimSpace(item.ParticipantID)
+	if participantID == "" {
+		participantID = strings.TrimSpace(item.Participant)
+	}
+
+	studyID := strings.TrimSpace(item.StudyID)
+	if studyID == "" {
+		studyID = strings.TrimSpace(item.Study.ID)
+	}
+	if studyID == "" {
+		studyID = parseStudyIDFromSubmissionURL(item.StudyURL)
+	}
+
+	snapshot, err := buildSubmissionSnapshot(
+		item.ID,
+		item.Status,
+		participantID,
+		studyID,
+		item.Study.Name,
+		append(json.RawMessage(nil), itemPayload...),
+	)
 	if err != nil {
-		logWarn("studies.response.ingest_failed", "source", "extension.intercepted_response", "url", payload.URL, "error", err)
-		writeError(w, http.StatusBadRequest, "failed to ingest studies response", err)
-		return
+		return nil, err
 	}
 
-	response := map[string]any{"success": true, "meta": map[string]any{"count": len(normalized.Results)}}
-	if availability != nil {
-		response["changes"] = availability
+	return snapshot, nil
+}
+
+func (s *Service) ingestSubmissionPayload(
+	body []byte,
+	observedAt time.Time,
+) (*SubmissionUpdateResult, error) {
+	if s.submissionsStore == nil {
+		return nil, errors.New("submissions store is not configured")
 	}
 
-	logInfo("studies.response.ingested", "source", "extension.intercepted_response", "count", len(normalized.Results), "url", payload.URL)
-	writeJSON(w, http.StatusOK, response)
+	snapshot, err := normalizeSubmissionSnapshot(body)
+	if err != nil {
+		return nil, err
+	}
+
+	update, err := s.submissionsStore.UpsertSnapshot(*snapshot, observedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	return update, nil
+}
+
+func (s *Service) ingestParticipantSubmissionsPayload(
+	body []byte,
+	observedAt time.Time,
+) (int, int, error) {
+	if s.submissionsStore == nil {
+		return 0, 0, errors.New("submissions store is not configured")
+	}
+
+	var parsed participantSubmissionsListResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return 0, 0, err
+	}
+
+	total := len(parsed.Results)
+	upserted := 0
+	baseObservedAt := utcNowOr(observedAt)
+
+	for _, itemPayload := range parsed.Results {
+		snapshot, err := normalizeSubmissionSnapshotFromParticipantListItem(itemPayload)
+		if err != nil {
+			logWarn("participant.submissions.item_parse_failed", "error", err)
+			continue
+		}
+
+		if _, err := s.submissionsStore.UpsertSnapshot(*snapshot, baseObservedAt); err != nil {
+			return total, upserted, err
+		}
+		upserted++
+	}
+
+	return total, upserted, nil
 }
 
 func (s *Service) markStudiesRefresh(observedAt time.Time, source, url string, statusCode int) error {
@@ -361,21 +534,18 @@ func (s *Service) markStudiesRefresh(observedAt time.Time, source, url string, s
 		source = "unknown"
 	}
 
-	return s.stateStore.SetStudiesRefresh(StudiesRefreshUpdate{
+	update := StudiesRefreshUpdate{
 		ObservedAt: utcNowOr(observedAt),
 		Source:     source,
 		URL:        url,
 		StatusCode: statusCode,
-	})
-}
+	}
+	if err := s.stateStore.SetStudiesRefresh(update); err != nil {
+		return err
+	}
 
-func (s *Service) publishStudiesRefreshEvent(update StudiesRefreshUpdate) {
-	s.publishEvent("studies_refresh", map[string]any{
-		"source":      update.Source,
-		"url":         update.URL,
-		"status_code": update.StatusCode,
-		"observed_at": utcNowOr(update.ObservedAt).Format(time.RFC3339Nano),
-	})
+	s.broadcastStudiesRefreshEvent(update)
+	return nil
 }
 
 func (s *Service) ingestStudiesPayload(
@@ -415,19 +585,6 @@ func (s *Service) ingestStudiesPayload(
 			logInfo("study_event", "event_type", "unavailable", "study_id", change.StudyID, "name", change.Name, "observed_at", availability.ObservedAt)
 		}
 	}
-
-	eventPayload := map[string]any{
-		"source":          source,
-		"url":             sourceURL,
-		"status_code":     statusCode,
-		"observed_at":     observedAt.Format(time.RFC3339Nano),
-		"available_count": len(normalizedBody.Results),
-	}
-	if availability != nil {
-		eventPayload["newly_available"] = availability.NewlyAvailable
-		eventPayload["became_unavailable"] = availability.BecameUnavailable
-	}
-	s.publishEvent("studies_updated", eventPayload)
 
 	return normalizedBody, availability, nil
 }
@@ -496,10 +653,6 @@ func (s *Service) handleStudies(w http.ResponseWriter, r *http.Request) {
 			"source": "cache",
 		},
 	})
-}
-
-func (s *Service) handleStudiesLive(w http.ResponseWriter, r *http.Request) {
-	s.handleStudies(w, r)
 }
 
 func (s *Service) handleStudiesForceRefresh(w http.ResponseWriter, r *http.Request) {

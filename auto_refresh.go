@@ -357,7 +357,7 @@ func (s *Service) resolveStudiesRefreshInputs() (*StoredToken, *StudiesHeadersCa
 		return nil, nil, "", fmt.Errorf("load token state: %w", err)
 	}
 	if token == nil {
-		return nil, nil, "", fmt.Errorf("not authenticated: send token to /receive-token first")
+		return nil, nil, "", fmt.Errorf("not authenticated: extension token sync required")
 	}
 
 	capture, err := s.headersStore.Get()
