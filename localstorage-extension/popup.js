@@ -5,6 +5,7 @@ const latestRefreshEl = document.getElementById("latestRefresh");
 const errorMessageEl = document.getElementById("errorMessage");
 const liveStudiesEl = document.getElementById("liveStudies");
 const eventsEl = document.getElementById("events");
+const submissionsEl = document.getElementById("submissions");
 const refreshDebugButton = document.getElementById("refreshDebugButton");
 const clearDebugButton = document.getElementById("clearDebugButton");
 const debugGridEl = document.getElementById("debugGrid");
@@ -12,6 +13,7 @@ const debugLogEl = document.getElementById("debugLog");
 const tabButtons = Array.from(document.querySelectorAll(".tab"));
 const panelLive = document.getElementById("panelLive");
 const panelFeed = document.getElementById("panelFeed");
+const panelSubmissions = document.getElementById("panelSubmissions");
 const panelSettings = document.getElementById("panelSettings");
 const refreshMinDelayInput = document.getElementById("refreshMinDelayInput");
 const refreshAverageDelayInput = document.getElementById("refreshAverageDelayInput");
@@ -23,12 +25,12 @@ const refreshCadenceSaveButton = document.getElementById("refreshCadenceSaveButt
 const refreshPlanSummaryEl = document.getElementById("refreshPlanSummary");
 const refreshPlanTrackEl = document.getElementById("refreshPlanTrack");
 
-const SERVICE_BASE_URL = "http://localhost:8080";
 const SERVICE_OFFLINE_MESSAGE = "Local service offline, start the Go server to continue.";
 const AUTH_REQUIRED_MESSAGE = "Signed out of Prolific. Log in at app.prolific.com to resume syncing.";
 const AUTH_REQUIRED_PANEL_MESSAGE = "Waiting for login.";
 const RETRY_INTERVAL_MS = 5000;
-const DEFAULT_REFRESH_INTERVAL_MS = 20000;
+const DEFAULT_REFRESH_INTERVAL_MS = 60000;
+const REACTIVE_REFRESH_DEBOUNCE_MS = 150;
 const REFRESH_CYCLE_SECONDS = 120;
 const DEFAULT_REFRESH_MIN_DELAY_SECONDS = 20;
 const DEFAULT_REFRESH_AVERAGE_DELAY_SECONDS = 30;
@@ -57,7 +59,9 @@ const DEBUG_EVENT_LABELS = Object.freeze({
   "settings.auto_open.updated": "Auto-open updated",
   "settings.studies_refresh_policy.updated": "Cadence saved",
   "settings.studies_refresh_policy.schedule_error": "Cadence schedule failed",
-  "settings.studies_refresh_policy.schedule_ok": "Cadence schedule applied"
+  "settings.studies_refresh_policy.schedule_ok": "Cadence schedule applied",
+  "service.ws.command_error": "WS command error",
+  "service.ws.unknown_message_type": "WS message ignored"
 });
 const DEBUG_ROWS = Object.freeze([
   ["Auth", (state) => formatAuthStatus(state)],
@@ -68,13 +72,12 @@ const DEBUG_ROWS = Object.freeze([
   ["Last Issue", (state) => formatDebugIssue(state)],
   ["Log Entries", (state) => Number(state.debug_log_count_total) || 0]
 ]);
-
-let stream = null;
-let streamRefreshTimer = null;
 let isRefreshingView = false;
 let retryCountdownTimer = null;
 let retryDeadlineAt = 0;
 let retryRefreshTimer = null;
+let reactiveRefreshTimer = null;
+let reactiveRefreshPending = false;
 let latestRefreshDate = null;
 let latestRefreshOffline = false;
 let latestRefreshTicker = null;
@@ -102,6 +105,7 @@ function renderPanelStatusMessage(message) {
   const html = `<div class="empty-events">${safeMessage}</div>`;
   liveStudiesEl.innerHTML = html;
   eventsEl.innerHTML = html;
+  submissionsEl.innerHTML = html;
 }
 
 function stopRetryCountdown() {
@@ -116,22 +120,50 @@ function stopRetryCountdown() {
   }
 }
 
-function scheduleRegularRefresh() {
+function scheduleViewRefreshAfter(delayMs) {
   if (retryRefreshTimer) {
     clearTimeout(retryRefreshTimer);
   }
   retryRefreshTimer = setTimeout(() => {
     retryRefreshTimer = null;
     refreshView();
-  }, DEFAULT_REFRESH_INTERVAL_MS);
+  }, delayMs);
+}
+
+function scheduleRegularRefresh() {
+  scheduleViewRefreshAfter(DEFAULT_REFRESH_INTERVAL_MS);
+}
+
+function applyObservedAtUpdate(observedAt) {
+  const date = parseDate(observedAt);
+  if (!date) {
+    return;
+  }
+
+  latestRefreshDate = date;
+  latestRefreshOffline = false;
+  refreshPrefixEl.textContent = "Updated ";
+  latestRefreshEl.textContent = formatRelative(date.toISOString());
+  latestRefreshEl.title = date.toLocaleString();
+}
+
+function scheduleReactiveRefresh() {
+  reactiveRefreshPending = true;
+  if (reactiveRefreshTimer || isRefreshingView) {
+    return;
+  }
+
+  reactiveRefreshTimer = setTimeout(() => {
+    reactiveRefreshTimer = null;
+    if (!reactiveRefreshPending) {
+      return;
+    }
+    reactiveRefreshPending = false;
+    refreshView();
+  }, REACTIVE_REFRESH_DEBOUNCE_MS);
 }
 
 function startOfflineRetryLoop() {
-  if (retryRefreshTimer) {
-    clearTimeout(retryRefreshTimer);
-    retryRefreshTimer = null;
-  }
-
   retryDeadlineAt = Date.now() + RETRY_INTERVAL_MS;
   renderOfflinePanels();
 
@@ -141,10 +173,7 @@ function startOfflineRetryLoop() {
     }, 250);
   }
 
-  retryRefreshTimer = setTimeout(() => {
-    retryRefreshTimer = null;
-    refreshView();
-  }, RETRY_INTERVAL_MS);
+  scheduleViewRefreshAfter(RETRY_INTERVAL_MS);
 }
 
 function clampInt(value, min, max, fallback) {
@@ -326,13 +355,6 @@ function isNetworkFailureMessage(message) {
     lowered.includes("fetch resource");
 }
 
-function createServiceUnavailableError(contextLabel) {
-  const prefix = contextLabel ? `${contextLabel}: ` : "";
-  const error = new Error(`${prefix}${SERVICE_OFFLINE_MESSAGE}`);
-  error.code = "SERVICE_UNAVAILABLE";
-  return error;
-}
-
 function isServiceUnavailableError(error) {
   if (!error) {
     return false;
@@ -405,24 +427,6 @@ async function sendRuntimeMessage(action, payload = {}) {
   return response;
 }
 
-async function fetchServiceJSON(path, options, contextLabel) {
-  let response;
-  try {
-    response = await fetch(`${SERVICE_BASE_URL}${path}`, options);
-  } catch (error) {
-    const message = errorMessageFromUnknown(error);
-    if (error instanceof TypeError || isNetworkFailureMessage(message)) {
-      throw createServiceUnavailableError(contextLabel);
-    }
-    throw new Error(`${contextLabel}: ${message || "Unknown network error."}`);
-  }
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${contextLabel}: HTTP ${response.status}${text ? ` ${text}` : ""}`);
-  }
-  return response.json();
-}
-
 async function getSettings() {
   const response = await sendRuntimeMessage("getSettings");
   return response.settings || {};
@@ -445,18 +449,13 @@ async function clearDebugLogs() {
   await sendRuntimeMessage("clearDebugLogs");
 }
 
-async function getLiveStudies(limit = 50) {
-  const payload = await fetchServiceJSON(`/studies-live?limit=${limit}`, undefined, "Failed to fetch live studies");
-  return Array.isArray(payload.results) ? payload.results : [];
-}
-
-async function getLatestEvents(limit = 25) {
-  const payload = await fetchServiceJSON(`/study-events?limit=${limit}`, undefined, "Failed to fetch study events");
-  return Array.isArray(payload.events) ? payload.events : [];
-}
-
-async function getServiceRefreshState() {
-  return fetchServiceJSON("/studies-refresh", undefined, "Failed to fetch refresh state");
+async function getDashboardData(liveLimit = 50, eventsLimit = 25, submissionsLimit = 100) {
+  const response = await sendRuntimeMessage("getDashboardData", {
+    live_limit: liveLimit,
+    events_limit: eventsLimit,
+    submissions_limit: submissionsLimit
+  });
+  return response.dashboard || {};
 }
 
 function formatShortNumber(value) {
@@ -471,27 +470,7 @@ function formatMoneyFromMinorUnits(money) {
     return "n/a";
   }
 
-  const rawAmount = Number(money.amount);
-  if (!Number.isFinite(rawAmount)) {
-    return "n/a";
-  }
-
-  const currency = (money.currency || "").toUpperCase();
-  if (!currency) {
-    return "n/a";
-  }
-
-  const majorAmount = rawAmount / 100;
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(majorAmount);
-  } catch {
-    return `${majorAmount.toFixed(2)} ${currency}`;
-  }
+  return formatMoneyFromMajorUnits(moneyMajorValue(money), money.currency);
 }
 
 function moneyMajorValue(money) {
@@ -519,6 +498,123 @@ function formatDurationMinutes(value) {
     return `${hours}h`;
   }
   return `${hours}h ${remaining}m`;
+}
+
+function formatDurationSeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return "n/a";
+  }
+
+  const rounded = Math.round(seconds);
+  if (rounded < 60) {
+    return `${rounded}s`;
+  }
+
+  const minutes = Math.floor(rounded / 60);
+  const remainingSeconds = rounded % 60;
+  if (minutes < 60) {
+    if (remainingSeconds === 0) {
+      return `${minutes}m`;
+    }
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (remainingMinutes === 0) {
+    return `${hours}h`;
+  }
+  return `${hours}h ${remainingMinutes}m`;
+}
+
+function formatMoneyFromMajorUnits(amountMajor, currency) {
+  const major = Number(amountMajor);
+  const code = String(currency || "").toUpperCase();
+  if (!Number.isFinite(major) || !code) {
+    return "n/a";
+  }
+
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: code,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(major);
+  } catch {
+    return `${major.toFixed(2)} ${code}`;
+  }
+}
+
+function perHourBadgeClass(value) {
+  const hourly = Number(value);
+  if (!Number.isFinite(hourly)) {
+    return "";
+  }
+  if (hourly > 15) {
+    return " rate-ultra";
+  }
+  if (hourly > 10) {
+    return " rate-high";
+  }
+  return "";
+}
+
+function normalizeSubmissionStatus(status) {
+  return String(status || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function formatSubmissionStatus(status) {
+  const normalized = normalizeSubmissionStatus(status);
+  if (!normalized) {
+    return "Unknown";
+  }
+  return normalized
+    .split(" ")
+    .map((word) => word.charAt(0) + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function submissionCardClass(status, phase) {
+  const normalizedStatus = normalizeSubmissionStatus(status);
+  if (normalizedStatus === "APPROVED") {
+    return "event submission-approved";
+  }
+  if (normalizedStatus === "AWAITING REVIEW") {
+    return "event submission-pending";
+  }
+  if (normalizedStatus === "RETURNED" || normalizedStatus === "REJECTED" || normalizedStatus === "SCREENED OUT") {
+    return "event submission-negative";
+  }
+
+  const normalized = String(phase || "").toLowerCase().trim();
+  if (normalized === "submitting") {
+    return "event submission-active";
+  }
+  if (normalized === "submitted") {
+    return "event submission-submitted";
+  }
+  return "event submission-other";
+}
+
+function extractSubmissionTimeTakenSeconds(payload) {
+  if (!payload || typeof payload !== "object") {
+    return NaN;
+  }
+
+  const startedAt = parseDate(payload.started_at);
+  const completedAt = parseDate(payload.completed_at);
+  if (!startedAt || !completedAt) {
+    return NaN;
+  }
+
+  const seconds = (completedAt.getTime() - startedAt.getTime()) / 1000;
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : NaN;
 }
 
 function formatRelative(value, includeClock = false) {
@@ -586,7 +682,7 @@ function renderLiveStudies(studies) {
     const perHourMoney = study.average_reward_per_hour;
     const perHour = escapeHtml(formatMoneyFromMinorUnits(perHourMoney));
     const perHourAmount = moneyMajorValue(perHourMoney);
-    const perHourClass = perHourAmount > 15 ? " rate-ultra" : (perHourAmount > 10 ? " rate-high" : "");
+    const perHourClass = perHourBadgeClass(perHourAmount);
     const eta = escapeHtml(formatDurationMinutes(study.estimated_completion_time));
 
     const placesAvailable = Number(study.places_available);
@@ -636,7 +732,7 @@ function renderEvents(events) {
     const perHourMoney = event.average_reward_per_hour;
     const perHour = escapeHtml(formatMoneyFromMinorUnits(perHourMoney));
     const perHourAmount = moneyMajorValue(perHourMoney);
-    const perHourClass = perHourAmount > 15 ? " rate-ultra" : (perHourAmount > 10 ? " rate-high" : "");
+    const perHourClass = perHourBadgeClass(perHourAmount);
     const duration = escapeHtml(formatDurationMinutes(event.estimated_completion_time));
 
     const totalPlaces = Number(event.total_available_places);
@@ -676,8 +772,78 @@ function renderEvents(events) {
   eventsEl.innerHTML = html;
 }
 
+function renderSubmissions(submissions) {
+  if (!Array.isArray(submissions) || !submissions.length) {
+    submissionsEl.innerHTML = '<div class="empty-events">No submissions tracked yet.</div>';
+    return;
+  }
+
+  const sorted = [...submissions].sort((a, b) => {
+    const aDate = parseDate(a && a.observed_at);
+    const bDate = parseDate(b && b.observed_at);
+    const aTs = aDate ? aDate.getTime() : 0;
+    const bTs = bDate ? bDate.getTime() : 0;
+    if (aTs !== bTs) {
+      return bTs - aTs;
+    }
+    const aID = a && a.submission_id ? String(a.submission_id) : "";
+    const bID = b && b.submission_id ? String(b.submission_id) : "";
+    return bID.localeCompare(aID);
+  });
+
+  const html = sorted.map((entry) => {
+    const name = escapeHtml(entry.study_name || "(unknown study)");
+    const observedAt = escapeHtml(formatRelative(entry.observed_at, true));
+    const studyURL = studyUrlFromId(entry.study_id);
+
+    const payload = entry && entry.payload && typeof entry.payload === "object"
+      ? entry.payload
+      : {};
+    const rewardMoney = payload && payload.submission_reward && typeof payload.submission_reward === "object"
+      ? payload.submission_reward
+      : null;
+    const reward = escapeHtml(formatMoneyFromMinorUnits(rewardMoney));
+
+    const timeTakenSeconds = extractSubmissionTimeTakenSeconds(payload);
+    const duration = escapeHtml(formatDurationSeconds(timeTakenSeconds));
+
+    const rewardMajor = moneyMajorValue(rewardMoney);
+    const hourlyMajor = Number.isFinite(rewardMajor) && Number.isFinite(timeTakenSeconds) && timeTakenSeconds > 0
+      ? (rewardMajor * 3600) / timeTakenSeconds
+      : NaN;
+    const hourlyLabel = formatMoneyFromMajorUnits(hourlyMajor, rewardMoney && rewardMoney.currency);
+    const hourly = escapeHtml(hourlyLabel === "n/a" ? "n/a" : `${hourlyLabel}/hr`);
+    const perHourClass = perHourBadgeClass(hourlyMajor);
+    const cardClass = submissionCardClass(entry.status, entry.phase);
+    const statusLabel = escapeHtml(formatSubmissionStatus(entry.status));
+
+    const cardInner = `
+      <div class="${cardClass}">
+        <div class="event-top">
+          <div class="event-title">${name}</div>
+          <div class="event-time">${observedAt}</div>
+        </div>
+        <div class="event-badges">
+          <span class="badge">${statusLabel}</span>
+          <span class="badge">${reward}</span>
+          <span class="badge${perHourClass}">${hourly}</span>
+          <span class="badge">${duration}</span>
+        </div>
+      </div>
+    `;
+
+    if (!studyURL) {
+      return cardInner;
+    }
+    return `<a class="event-link" href="${studyURL}" title="Open study in Prolific">${cardInner}</a>`;
+  }).join("");
+
+  submissionsEl.innerHTML = html;
+}
+
 function activateTab(tabName) {
   panelLive.classList.toggle("active", tabName === "live");
+  panelSubmissions.classList.toggle("active", tabName === "submissions");
   panelFeed.classList.toggle("active", tabName === "feed");
   panelSettings.classList.toggle("active", tabName === "settings");
 
@@ -729,20 +895,9 @@ function isAuthRequiredState(state) {
     reason.includes("signed out of prolific");
 }
 
-function renderLatestRefresh(serviceRefreshState, extensionState) {
-  const candidates = [];
-
-  const extDate = parseDate(extensionState && extensionState.studies_last_refresh_at);
-  if (extDate) {
-    candidates.push(extDate);
-  }
-
-  const svcDate = parseDate(serviceRefreshState && serviceRefreshState.last_studies_refresh_at);
-  if (svcDate) {
-    candidates.push(svcDate);
-  }
-
-  if (!candidates.length) {
+function renderLatestRefresh(serviceRefreshState) {
+  const latest = parseDate(serviceRefreshState && serviceRefreshState.last_studies_refresh_at);
+  if (!latest) {
     latestRefreshDate = null;
     latestRefreshOffline = false;
     refreshPrefixEl.textContent = "Updated ";
@@ -751,8 +906,7 @@ function renderLatestRefresh(serviceRefreshState, extensionState) {
     return;
   }
 
-  candidates.sort((a, b) => b.getTime() - a.getTime());
-  latestRefreshDate = candidates[0];
+  latestRefreshDate = latest;
   latestRefreshOffline = false;
   refreshPrefixEl.textContent = "Updated ";
   latestRefreshEl.textContent = formatRelative(latestRefreshDate.toISOString());
@@ -913,6 +1067,14 @@ function renderDebugInfo(extensionState, serviceRefreshState) {
   }).join("");
 }
 
+async function runWithHealthError(task) {
+  try {
+    await task();
+  } catch (error) {
+    setHealthError(error.message);
+  }
+}
+
 async function refreshSettings() {
   try {
     const settings = await getSettings();
@@ -928,29 +1090,62 @@ async function refreshSettings() {
   }
 }
 
+function dashboardSectionOrError(section, fallbackError) {
+  if (section && section.ok === true) {
+    return { ok: true, data: section.data };
+  }
+  if (section && section.ok === false) {
+    return { ok: false, error: section.error || fallbackError };
+  }
+  return { ok: false, error: fallbackError };
+}
+
 async function refreshView() {
   if (isRefreshingView) {
+    reactiveRefreshPending = true;
     return;
   }
   isRefreshingView = true;
+  reactiveRefreshPending = false;
 
   try {
-    const [stateResult, refreshResult, studiesResult, eventsResult] = await Promise.allSettled([
+    const [stateResult, dashboardResult] = await Promise.allSettled([
       getSyncState(),
-      getServiceRefreshState(),
-      getLiveStudies(50),
-      getLatestEvents(25)
+      getDashboardData(50, 25, 100)
     ]);
 
     const extensionState = stateResult.status === "fulfilled" ? stateResult.value : null;
-    const refreshState = refreshResult.status === "fulfilled" ? refreshResult.value : null;
     const authRequired = isAuthRequiredState(extensionState);
-    const serviceResults = [refreshResult, studiesResult, eventsResult];
-    const serviceSuccessCount = serviceResults.filter((result) => result.status === "fulfilled").length;
-    const serviceUnavailableCount = serviceResults.filter((result) =>
-      result.status === "rejected" && isServiceUnavailableError(result.reason)
+
+    const dashboard = dashboardResult.status === "fulfilled" ? dashboardResult.value : null;
+    const dashboardError = dashboardResult.status === "rejected"
+      ? toUserErrorMessage(dashboardResult.reason)
+      : "Failed to fetch dashboard data.";
+
+    const refreshSection = dashboardSectionOrError(
+      dashboard && dashboard.refresh_state,
+      dashboardError
+    );
+    const studiesSection = dashboardSectionOrError(
+      dashboard && dashboard.studies,
+      dashboardError
+    );
+    const eventsSection = dashboardSectionOrError(
+      dashboard && dashboard.events,
+      dashboardError
+    );
+    const submissionsSection = dashboardSectionOrError(
+      dashboard && dashboard.submissions,
+      dashboardError
+    );
+    const refreshState = refreshSection.ok ? refreshSection.data : null;
+
+    const serviceSections = [refreshSection, studiesSection, eventsSection, submissionsSection];
+    const serviceSuccessCount = serviceSections.filter((section) => section.ok).length;
+    const serviceUnavailableCount = serviceSections.filter(
+      (section) => !section.ok && isServiceUnavailableError(section.error)
     ).length;
-    const serviceOffline = serviceSuccessCount === 0 && serviceUnavailableCount > 0;
+    const serviceOffline = serviceSuccessCount === 0 && serviceUnavailableCount === serviceSections.length;
 
     if (serviceOffline) {
       startOfflineRetryLoop();
@@ -961,37 +1156,46 @@ async function refreshView() {
       if (authRequired) {
         renderAuthRequiredPanels();
       } else {
-        if (studiesResult.status === "fulfilled") {
-          renderLiveStudies(studiesResult.value);
+        if (studiesSection.ok) {
+          renderLiveStudies(studiesSection.data);
         } else {
-          liveStudiesEl.innerHTML = `<div class="empty-events">${escapeHtml(toUserErrorMessage(studiesResult.reason))}</div>`;
+          liveStudiesEl.innerHTML = `<div class="empty-events">${escapeHtml(toUserErrorMessage(studiesSection.error))}</div>`;
         }
 
-        if (eventsResult.status === "fulfilled") {
-          renderEvents(eventsResult.value);
+        if (eventsSection.ok) {
+          renderEvents(eventsSection.data);
         } else {
-          eventsEl.innerHTML = `<div class="empty-events">${escapeHtml(toUserErrorMessage(eventsResult.reason))}</div>`;
+          eventsEl.innerHTML = `<div class="empty-events">${escapeHtml(toUserErrorMessage(eventsSection.error))}</div>`;
+        }
+
+        if (submissionsSection.ok) {
+          renderSubmissions(submissionsSection.data);
+        } else {
+          submissionsEl.innerHTML = `<div class="empty-events">${escapeHtml(toUserErrorMessage(submissionsSection.error))}</div>`;
         }
       }
     }
 
-    const firstError = [stateResult, refreshResult, studiesResult, eventsResult]
-      .find((result) => (
-        result.status === "rejected" &&
-        (!isServiceUnavailableError(result.reason) || serviceOffline)
-      ));
-    const firstErrorMessage = serviceOffline
-      ? SERVICE_OFFLINE_MESSAGE
-      : (firstError && firstError.status === "rejected"
-        ? toUserErrorMessage(firstError.reason)
-        : "");
+    let firstErrorMessage = "";
+    if (serviceOffline) {
+      firstErrorMessage = SERVICE_OFFLINE_MESSAGE;
+    } else if (stateResult.status === "rejected") {
+      firstErrorMessage = toUserErrorMessage(stateResult.reason);
+    } else {
+      const firstServiceError = serviceSections.find(
+        (section) => !section.ok && !isServiceUnavailableError(section.error)
+      );
+      if (firstServiceError) {
+        firstErrorMessage = toUserErrorMessage(firstServiceError.error);
+      }
+    }
 
     if (serviceOffline) {
       renderOfflineLatestRefresh();
     } else if (authRequired) {
       renderSignedOutLatestRefresh();
     } else {
-      renderLatestRefresh(refreshState, extensionState);
+      renderLatestRefresh(refreshState);
     }
     renderDebugInfo(extensionState, refreshState);
 
@@ -1005,42 +1209,10 @@ async function refreshView() {
     setHealthError(healthMessage);
   } finally {
     isRefreshingView = false;
-  }
-}
-
-function scheduleRefreshFromStream() {
-  if (streamRefreshTimer) {
-    return;
-  }
-  streamRefreshTimer = setTimeout(() => {
-    streamRefreshTimer = null;
-    refreshView();
-  }, 150);
-}
-
-function startEventStream() {
-  if (stream) {
-    try {
-      stream.close();
-    } catch {
-      // ignore
+    if (reactiveRefreshPending && !reactiveRefreshTimer) {
+      scheduleReactiveRefresh();
     }
   }
-
-  try {
-    stream = new EventSource("http://localhost:8080/events/stream");
-  } catch {
-    stream = null;
-    return;
-  }
-
-  stream.onmessage = () => {
-    scheduleRefreshFromStream();
-  };
-
-  stream.onerror = () => {
-    // EventSource auto-reconnects. Keep fallback polling active.
-  };
 }
 
 function getRefreshPolicyFromInputs() {
@@ -1104,7 +1276,7 @@ if (refreshCadenceSaveButton) {
     const refreshPolicy = getRefreshPolicyFromInputs();
     applyRefreshPolicyToControls(refreshPolicy);
 
-    try {
+    await runWithHealthError(async () => {
       const saved = await setRefreshDelays(
         refreshPolicy.minimum_delay_seconds,
         refreshPolicy.average_delay_seconds,
@@ -1116,9 +1288,7 @@ if (refreshCadenceSaveButton) {
         saved.studies_refresh_spread_seconds
       );
       applyRefreshPolicyToControls(normalized);
-    } catch (error) {
-      setHealthError(error.message);
-    }
+    });
   });
 }
 
@@ -1136,12 +1306,10 @@ if (refreshDebugButton) {
 
 if (clearDebugButton) {
   clearDebugButton.addEventListener("click", async () => {
-    try {
+    await runWithHealthError(async () => {
       await clearDebugLogs();
       await refreshView();
-    } catch (error) {
-      setHealthError(error.message);
-    }
+    });
   });
 }
 
@@ -1166,8 +1334,19 @@ document.addEventListener("click", (event) => {
   });
 });
 
+if (chrome.runtime && chrome.runtime.onMessage) {
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message || message.action !== "dashboardUpdated") {
+      return false;
+    }
+
+    applyObservedAtUpdate(message.observed_at);
+    scheduleReactiveRefresh();
+    return false;
+  });
+}
+
 refreshSettings();
 activateTab("live");
 refreshView();
-startEventStream();
 latestRefreshTicker = setInterval(tickLatestRefreshLabel, 1000);

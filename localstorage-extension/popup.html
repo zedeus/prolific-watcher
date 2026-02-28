@@ -138,7 +138,8 @@
     }
 
     .live-studies,
-    .events {
+    .events,
+    .submissions {
       min-height: 420px;
       max-height: 420px;
       overflow: auto;
@@ -149,12 +150,14 @@
 
     .live-studies::-webkit-scrollbar,
     .events::-webkit-scrollbar,
+    .submissions::-webkit-scrollbar,
     .debug-log::-webkit-scrollbar {
       width: 7px;
     }
 
     .live-studies::-webkit-scrollbar-thumb,
     .events::-webkit-scrollbar-thumb,
+    .submissions::-webkit-scrollbar-thumb,
     .debug-log::-webkit-scrollbar-thumb {
       background: #c6ceda;
       border-radius: 2px;
@@ -183,6 +186,37 @@
     .event.live {
       border-left-color: #98a2b3;
       background: var(--surface);
+    }
+
+    .event.submission-approved,
+    .event.submission-complete {
+      border-left-color: var(--good);
+      background: #f7fcf8;
+    }
+
+    .event.submission-pending {
+      border-left-color: #d97706;
+      background: #fffaf0;
+    }
+
+    .event.submission-negative {
+      border-left-color: var(--bad);
+      background: #fff5f7;
+    }
+
+    .event.submission-active {
+      border-left-color: #0ea5e9;
+      background: var(--surface);
+    }
+
+    .event.submission-submitted {
+      border-left-color: #98a2b3;
+      background: var(--surface);
+    }
+
+    .event.submission-other {
+      border-left-color: #98a2b3;
+      background: var(--surface-2);
     }
 
     .event-link {
@@ -619,7 +653,7 @@
       margin-bottom: 0;
     }
 
-    #autoOpenToggle {
+    .switch-toggle {
       appearance: none;
       width: 40px;
       height: 22px;
@@ -632,7 +666,7 @@
       flex: 0 0 auto;
     }
 
-    #autoOpenToggle::before {
+    .switch-toggle::before {
       content: "";
       width: 16px;
       height: 16px;
@@ -645,12 +679,12 @@
       transition: transform 120ms ease;
     }
 
-    #autoOpenToggle:checked {
+    .switch-toggle:checked {
       background: #cfe3ff;
       border-color: #9dc0f0;
     }
 
-    #autoOpenToggle:checked::before {
+    .switch-toggle:checked::before {
       transform: translateX(18px);
     }
 
@@ -672,6 +706,7 @@
         <div class="tabs" role="tablist" aria-label="Popup tabs">
           <button id="tabLive" class="tab active" type="button" data-tab="live" role="tab" aria-selected="true">Live</button>
           <button id="tabFeed" class="tab" type="button" data-tab="feed" role="tab" aria-selected="false">Feed</button>
+          <button id="tabSubmissions" class="tab" type="button" data-tab="submissions" role="tab" aria-selected="false">Submissions</button>
           <button id="tabSettings" class="tab" type="button" data-tab="settings" role="tab" aria-selected="false">Settings</button>
         </div>
       </div>
@@ -690,6 +725,12 @@
         </div>
       </div>
 
+      <div id="panelSubmissions" class="panel" role="tabpanel" aria-labelledby="tabSubmissions">
+        <div id="submissions" class="submissions">
+          <div class="empty-events">No submissions tracked yet.</div>
+        </div>
+      </div>
+
       <div id="panelSettings" class="panel" role="tabpanel" aria-labelledby="tabSettings">
         <div class="settings">
           <div class="setting-card">
@@ -697,7 +738,7 @@
               <div class="setting-title">Auto-open Prolific tab</div>
               <div class="setting-sub">Keeps a background Prolific tab alive when none are open.</div>
             </div>
-            <input id="autoOpenToggle" type="checkbox" aria-label="Auto-open Prolific tab">
+            <input id="autoOpenToggle" class="switch-toggle" type="checkbox" aria-label="Auto-open Prolific tab">
           </div>
 
           <div class="setting-card stack">

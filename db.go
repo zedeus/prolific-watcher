@@ -87,10 +87,23 @@ func applyMigrations(db *sql.DB) error {
 			last_studies_refresh_status INTEGER,
 			updated_at TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS submissions (
+			submission_id TEXT PRIMARY KEY,
+			study_id TEXT NOT NULL,
+			study_name TEXT NOT NULL,
+			participant_id TEXT,
+			status TEXT NOT NULL,
+			phase TEXT NOT NULL CHECK (phase IN ('submitting', 'submitted')),
+			payload_json TEXT NOT NULL,
+			observed_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
 		`CREATE INDEX IF NOT EXISTS idx_studies_history_study_id ON studies_history(study_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_studies_history_observed_at ON studies_history(observed_at);`,
 		`CREATE INDEX IF NOT EXISTS idx_study_availability_events_study_id ON study_availability_events(study_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_study_availability_events_observed_at ON study_availability_events(observed_at);`,
+		`CREATE INDEX IF NOT EXISTS idx_submissions_phase ON submissions(phase);`,
+		`CREATE INDEX IF NOT EXISTS idx_submissions_observed_at ON submissions(observed_at);`,
 	}
 
 	if err := execStatements(db, statements...); err != nil {

@@ -10,11 +10,23 @@ import (
 )
 
 const (
-	defaultRecentEventsLimit = 50
-	maxRecentEventsLimit     = 1000
-	defaultCurrentStudies    = 200
-	maxCurrentStudies        = 2000
+	defaultRecentEventsLimit  = 50
+	maxRecentEventsLimit      = 1000
+	defaultCurrentStudies     = 200
+	maxCurrentStudies         = 2000
+	defaultCurrentSubmissions = 200
+	maxCurrentSubmissions     = 2000
 )
+
+var submissionStatusPhase = map[string]string{
+	"RESERVED":        SubmissionPhaseSubmitting,
+	"ACTIVE":          SubmissionPhaseSubmitting,
+	"AWAITING REVIEW": SubmissionPhaseSubmitted,
+	"APPROVED":        SubmissionPhaseSubmitted,
+	"REJECTED":        SubmissionPhaseSubmitted,
+	"SCREENED OUT":    SubmissionPhaseSubmitted,
+	"RETURNED":        SubmissionPhaseSubmitted,
+}
 
 type TokenStore struct{ db *sql.DB }
 
@@ -24,6 +36,8 @@ type ServiceStateStore struct{ db *sql.DB }
 
 type StudiesStore struct{ db *sql.DB }
 
+type SubmissionsStore struct{ db *sql.DB }
+
 func NewTokenStore(db *sql.DB) *TokenStore { return &TokenStore{db: db} }
 
 func NewStudiesHeaderStore(db *sql.DB) *StudiesHeaderStore { return &StudiesHeaderStore{db: db} }
@@ -31,6 +45,8 @@ func NewStudiesHeaderStore(db *sql.DB) *StudiesHeaderStore { return &StudiesHead
 func NewServiceStateStore(db *sql.DB) *ServiceStateStore { return &ServiceStateStore{db: db} }
 
 func NewStudiesStore(db *sql.DB) *StudiesStore { return &StudiesStore{db: db} }
+
+func NewSubmissionsStore(db *sql.DB) *SubmissionsStore { return &SubmissionsStore{db: db} }
 
 func (s *TokenStore) Set(token StoredToken) error {
 	token.ReceivedAt = utcNowOr(token.ReceivedAt)
@@ -225,6 +241,212 @@ func (s *ServiceStateStore) GetStudiesRefresh() (*StudiesRefreshState, error) {
 		state.LastStudiesRefreshStatus = int(status.Int64)
 	}
 	return state, nil
+}
+
+func canonicalSubmissionStatus(status string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(status))
+	normalized = strings.ReplaceAll(normalized, "_", " ")
+	normalized = strings.ReplaceAll(normalized, "-", " ")
+	for strings.Contains(normalized, "  ") {
+		normalized = strings.ReplaceAll(normalized, "  ", " ")
+	}
+	return strings.TrimSpace(normalized)
+}
+
+func normalizedSubmissionPhase(status string) string {
+	normalized := canonicalSubmissionStatus(status)
+	if phase, ok := submissionStatusPhase[normalized]; ok {
+		return phase
+	}
+
+	if normalized != "" {
+		logWarn(
+			"submission.status.unmapped",
+			"status",
+			status,
+			"normalized_status",
+			normalized,
+			"default_phase",
+			SubmissionPhaseSubmitting,
+		)
+	}
+
+	return SubmissionPhaseSubmitting
+}
+
+func (s *SubmissionsStore) UpsertSnapshot(snapshot SubmissionSnapshot, observedAt time.Time) (*SubmissionUpdateResult, error) {
+	if strings.TrimSpace(snapshot.SubmissionID) == "" {
+		return nil, fmt.Errorf("missing submission_id")
+	}
+
+	snapshot.SubmissionID = strings.TrimSpace(snapshot.SubmissionID)
+	snapshot.Status = canonicalSubmissionStatus(snapshot.Status)
+	if snapshot.Status == "" {
+		return nil, fmt.Errorf("missing status")
+	}
+
+	snapshot.Phase = normalizedSubmissionPhase(snapshot.Status)
+	snapshot.StudyID = strings.TrimSpace(snapshot.StudyID)
+	snapshot.StudyName = strings.TrimSpace(snapshot.StudyName)
+	snapshot.ParticipantID = strings.TrimSpace(snapshot.ParticipantID)
+	if snapshot.StudyID == "" {
+		snapshot.StudyID = "unknown"
+	}
+	if snapshot.StudyName == "" {
+		snapshot.StudyName = "Unknown Study"
+	}
+	if len(snapshot.Payload) == 0 {
+		snapshot.Payload = json.RawMessage(`{}`)
+	}
+	observedAt = utcNowOr(observedAt)
+
+	result := &SubmissionUpdateResult{
+		SubmissionID: snapshot.SubmissionID,
+		StudyID:      snapshot.StudyID,
+		StudyName:    snapshot.StudyName,
+		Status:       snapshot.Status,
+		Phase:        snapshot.Phase,
+		ObservedAt:   observedAt,
+	}
+
+	payload := string(snapshot.Payload)
+	at := formatTime(observedAt)
+	updatedAt := formatTime(time.Now().UTC())
+
+	err := withTx(s.db, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(
+			`INSERT INTO submissions (
+				submission_id, study_id, study_name, participant_id, status, phase, payload_json, observed_at, updated_at
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(submission_id) DO UPDATE SET
+				study_id = CASE
+					WHEN excluded.study_id <> '' AND excluded.study_id <> 'unknown' THEN excluded.study_id
+					ELSE submissions.study_id
+				END,
+				study_name = CASE
+					WHEN excluded.study_name <> '' AND excluded.study_name <> 'Unknown Study' THEN excluded.study_name
+					ELSE submissions.study_name
+				END,
+				participant_id = CASE
+					WHEN excluded.participant_id <> '' THEN excluded.participant_id
+					ELSE submissions.participant_id
+				END,
+				status = excluded.status,
+				phase = excluded.phase,
+				payload_json = CASE
+					WHEN submissions.phase = excluded.phase
+						AND submissions.phase = 'submitted'
+						AND (
+							json_extract(submissions.payload_json, '$.returned_at') IS NOT NULL
+							OR json_extract(submissions.payload_json, '$.completed_at') IS NOT NULL
+						)
+						AND json_extract(excluded.payload_json, '$.returned_at') IS NULL
+						AND json_extract(excluded.payload_json, '$.completed_at') IS NULL
+					THEN submissions.payload_json
+					ELSE excluded.payload_json
+				END,
+				observed_at = CASE
+					WHEN submissions.phase = excluded.phase
+						AND submissions.phase = 'submitted'
+					THEN submissions.observed_at
+					ELSE excluded.observed_at
+				END,
+				updated_at = excluded.updated_at`,
+			snapshot.SubmissionID,
+			snapshot.StudyID,
+			snapshot.StudyName,
+			snapshot.ParticipantID,
+			snapshot.Status,
+			snapshot.Phase,
+			payload,
+			at,
+			updatedAt,
+		); err != nil {
+			return fmt.Errorf("upsert current submission: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (s *SubmissionsStore) GetCurrentSubmissions(limit int, phase string) ([]SubmissionState, error) {
+	limit = clamp(limit, defaultCurrentSubmissions, maxCurrentSubmissions)
+	phase = strings.ToLower(strings.TrimSpace(phase))
+	if phase == "" {
+		phase = "all"
+	}
+	if phase != "all" && phase != SubmissionPhaseSubmitting && phase != SubmissionPhaseSubmitted {
+		return nil, fmt.Errorf("invalid submission phase")
+	}
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if phase == "all" {
+		rows, err = s.db.Query(
+			`SELECT submission_id, study_id, study_name, participant_id, status, phase, observed_at, updated_at, payload_json
+			 FROM submissions
+			 ORDER BY observed_at DESC, submission_id DESC
+			 LIMIT ?`,
+			limit,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT submission_id, study_id, study_name, participant_id, status, phase, observed_at, updated_at, payload_json
+			 FROM submissions
+			 WHERE phase = ?
+			 ORDER BY observed_at DESC, submission_id DESC
+			 LIMIT ?`,
+			phase,
+			limit,
+		)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query current submissions: %w", err)
+	}
+	defer rows.Close()
+
+	submissions := make([]SubmissionState, 0, limit)
+	for rows.Next() {
+		var (
+			state       SubmissionState
+			participant sql.NullString
+			observedAt  string
+			updatedAt   string
+			payloadJSON string
+		)
+		if err := rows.Scan(
+			&state.SubmissionID,
+			&state.StudyID,
+			&state.StudyName,
+			&participant,
+			&state.Status,
+			&state.Phase,
+			&observedAt,
+			&updatedAt,
+			&payloadJSON,
+		); err != nil {
+			return nil, fmt.Errorf("scan current submission: %w", err)
+		}
+		if participant.Valid {
+			state.ParticipantID = participant.String
+		}
+		state.ObservedAt = parseTime(observedAt)
+		state.UpdatedAt = parseTime(updatedAt)
+		state.Payload = json.RawMessage(payloadJSON)
+		submissions = append(submissions, state)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate current submissions: %w", err)
+	}
+	return submissions, nil
 }
 
 type StudyChange struct {

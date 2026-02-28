@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // StoredToken is the token payload accepted from the browser extension.
 type StoredToken struct {
@@ -45,4 +48,40 @@ type DelayedRefreshPolicy struct {
 	AverageDelaySeconds int `json:"average_delay_seconds"`
 	SpreadSeconds       int `json:"spread_seconds,omitempty"`
 	CycleSeconds        int `json:"cycle_seconds,omitempty"`
+}
+
+const (
+	SubmissionPhaseSubmitting = "submitting"
+	SubmissionPhaseSubmitted  = "submitted"
+)
+
+type SubmissionSnapshot struct {
+	SubmissionID  string          `json:"submission_id"`
+	StudyID       string          `json:"study_id"`
+	StudyName     string          `json:"study_name"`
+	ParticipantID string          `json:"participant_id,omitempty"`
+	Status        string          `json:"status"`
+	Phase         string          `json:"phase"`
+	Payload       json.RawMessage `json:"payload"`
+}
+
+type SubmissionState struct {
+	SubmissionID  string          `json:"submission_id"`
+	StudyID       string          `json:"study_id"`
+	StudyName     string          `json:"study_name"`
+	ParticipantID string          `json:"participant_id,omitempty"`
+	Status        string          `json:"status"`
+	Phase         string          `json:"phase"`
+	ObservedAt    time.Time       `json:"observed_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+	Payload       json.RawMessage `json:"payload,omitempty"`
+}
+
+type SubmissionUpdateResult struct {
+	SubmissionID string    `json:"submission_id"`
+	StudyID      string    `json:"study_id"`
+	StudyName    string    `json:"study_name"`
+	Status       string    `json:"status"`
+	Phase        string    `json:"phase"`
+	ObservedAt   time.Time `json:"observed_at"`
 }
