@@ -1,0 +1,39 @@
+README.md
+  8bed1af5b9408a9c 17,19-21,24,26,29,35
+  2d0fb757abb5ba0a 3,5-7,9,11,23,28,30,32,34,36
+localstorage-extension/README.md
+  2d0fb757abb5ba0a 3,5,7-10,16,18,20-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.5",
+  "base_commit_sha": "430e523c3f99e8b1526f1881c6ee5ff8920c8529",
+  "prompts": {
+    "2d0fb757abb5ba0a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ca16a-1478-7112-b21b-39e05474411b",
+        "model": "gpt-5.3-codex"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 23,
+      "overriden_lines": 0
+    },
+    "8bed1af5b9408a9c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019c95dc-e248-75b3-b597-be6d72b2f18b",
+        "model": "gpt-5.3-codex"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 8,
+      "overriden_lines": 0
+    }
+  }
+}
