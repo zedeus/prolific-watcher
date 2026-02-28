@@ -1,0 +1,49 @@
+db.go
+  1d64d47ec415b1e4 90-100,105-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.5",
+  "base_commit_sha": "dc9690bb645e74afdafa52eb40806bacee7525e4",
+  "prompts": {
+    "1d64d47ec415b1e4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019c9607-4fb6-7281-a114-2d3c38396684",
+        "model": "gpt-5.3-codex"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 13,
+      "overriden_lines": 0
+    },
+    "2d0fb757abb5ba0a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ca16a-1478-7112-b21b-39e05474411b",
+        "model": "gpt-5.3-codex"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 23,
+      "overriden_lines": 0
+    },
+    "8bed1af5b9408a9c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019c95dc-e248-75b3-b597-be6d72b2f18b",
+        "model": "gpt-5.3-codex"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 8,
+      "overriden_lines": 0
+    }
+  }
+}
