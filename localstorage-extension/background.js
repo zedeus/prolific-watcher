@@ -8,12 +8,16 @@ const OAUTH_TOKEN_PATTERN = "*://auth.prolific.com/oauth/token*";
 
 const SERVICE_BASE_URL = "http://localhost:8080";
 const SERVICE_OFFLINE_MESSAGE = "Local service offline, start the Go server to continue.";
+const SERVICE_CONNECTING_MESSAGE = "Local service connecting; retrying shortly.";
 const SERVICE_WS_URL = SERVICE_BASE_URL.replace(/^http/i, "ws") + "/ws";
 const SERVICE_WS_HEARTBEAT_INTERVAL_MS = 10_000;
 const SERVICE_WS_HEARTBEAT_TIMEOUT_MS = 25_000;
 const SERVICE_WS_RECONNECT_BASE_DELAY_MS = 500;
 const SERVICE_WS_RECONNECT_MAX_DELAY_MS = 15_000;
 const SERVICE_WS_RECONNECT_JITTER_MS = 250;
+const SERVICE_WS_CONNECT_WAIT_MS = 1_500;
+const SERVICE_WS_CONNECT_POLL_MS = 50;
+const TOKEN_SYNC_RETRY_DELAY_MS = 1_000;
 const DASHBOARD_DEFAULT_STUDIES_LIMIT = 50;
 const DASHBOARD_DEFAULT_EVENTS_LIMIT = 25;
 const DASHBOARD_DEFAULT_SUBMISSIONS_LIMIT = 100;
@@ -119,6 +123,7 @@ let serviceSocketReconnectTimer = null;
 let serviceSocketHeartbeatTimer = null;
 let serviceSocketReconnectAttempts = 0;
 let serviceSocketLastHeartbeatAckAt = 0;
+let tokenSyncRetryTimer = null;
 let autoOpenInFlight = false;
 let lastAutoOpenedTabId = null;
 
@@ -682,6 +687,42 @@ function scheduleServiceSocketReconnect(reason) {
   }, delay);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function waitForServiceSocketReady(messageType) {
+  if (isServiceSocketReady()) {
+    return true;
+  }
+
+  ensureServiceSocketConnected(`command:${messageType}`);
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < SERVICE_WS_CONNECT_WAIT_MS) {
+    await sleep(SERVICE_WS_CONNECT_POLL_MS);
+    if (isServiceSocketReady()) {
+      return true;
+    }
+    ensureServiceSocketConnected(`command_wait:${messageType}`);
+  }
+  return isServiceSocketReady();
+}
+
+function scheduleTokenSyncRetry(trigger, delayMs = TOKEN_SYNC_RETRY_DELAY_MS) {
+  if (tokenSyncRetryTimer) {
+    return;
+  }
+
+  tokenSyncRetryTimer = setTimeout(() => {
+    tokenSyncRetryTimer = null;
+    requestTokenSync(trigger).catch(() => {
+      // Keep extension resilient.
+    });
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
 function ensureServiceSocketConnected(reason) {
   if (typeof WebSocket === "undefined") {
     return;
@@ -721,6 +762,7 @@ function ensureServiceSocketConnected(reason) {
     updateServiceSocketState(true, `connected:${reason}`);
     pushDebugLog("service.ws.connected", { reason });
     startServiceSocketHeartbeatLoop();
+    scheduleTokenSyncRetry("service.ws.connected", 0);
   };
 
   socket.onmessage = (event) => {
@@ -796,33 +838,41 @@ function queueServiceSocketMessage(messageType, payload) {
     payload
   });
 
-  if (isServiceSocketReady()) {
-    try {
-      serviceSocket.send(encoded);
-      return;
-    } catch {
-      try {
-        serviceSocket.close();
-      } catch {
-        // Best effort.
-      }
-      pushDebugLog("service.ws.send_failed", { type: messageType });
-      ensureServiceSocketConnected(`send_failed:${messageType}`);
-      throw new Error(SERVICE_OFFLINE_MESSAGE);
-    }
+  if (!isServiceSocketReady()) {
+    throw new Error(SERVICE_CONNECTING_MESSAGE);
   }
 
-  pushDebugLog("service.ws.command_dropped_not_connected", { type: messageType });
-  ensureServiceSocketConnected(`message:${messageType}`);
-  throw new Error(SERVICE_OFFLINE_MESSAGE);
+  try {
+    serviceSocket.send(encoded);
+    return;
+  } catch {
+    try {
+      serviceSocket.close();
+    } catch {
+      // Best effort.
+    }
+    pushDebugLog("service.ws.send_failed", { type: messageType });
+    ensureServiceSocketConnected(`send_failed:${messageType}`);
+    throw new Error(SERVICE_OFFLINE_MESSAGE);
+  }
 }
 
 async function sendServiceCommand(messageType, payload, errorPrefix) {
+  const ready = await waitForServiceSocketReady(messageType);
+  if (!ready) {
+    pushDebugLog("service.ws.command_dropped_not_connected", {
+      type: messageType,
+      wait_ms: SERVICE_WS_CONNECT_WAIT_MS
+    });
+    throw new Error(SERVICE_CONNECTING_MESSAGE);
+  }
+
   try {
     queueServiceSocketMessage(messageType, payload);
   } catch (error) {
-    if (stringifyError(error) === SERVICE_OFFLINE_MESSAGE) {
-      throw new Error(SERVICE_OFFLINE_MESSAGE);
+    const message = stringifyError(error);
+    if (message === SERVICE_OFFLINE_MESSAGE || message === SERVICE_CONNECTING_MESSAGE) {
+      throw new Error(message);
     }
     const prefix = errorPrefix || "WebSocket command";
     throw new Error(`${prefix} failed: ${rawErrorMessage(error)}`);
@@ -1064,14 +1114,21 @@ async function syncTokenOnce(trigger) {
     bumpCounter("token_sync_success_count", 1);
     pushDebugLog("token.sync.ok", { trigger: normalizedTrigger, tab_origin: extracted.origin });
   } catch (error) {
+    const message = stringifyError(error);
+    if (message === SERVICE_CONNECTING_MESSAGE) {
+      pushDebugLog("token.sync.deferred_service_connecting", { trigger: normalizedTrigger });
+      scheduleTokenSyncRetry(`${normalizedTrigger}.service_connecting_retry`);
+      return;
+    }
+
     await setTokenSyncState({
       ok: false,
       authRequired: false,
       trigger: normalizedTrigger,
-      reason: stringifyError(error)
+      reason: message
     });
     bumpCounter("token_sync_error_count", 1);
-    pushDebugLog("token.sync.error", { trigger: normalizedTrigger, error: stringifyError(error) });
+    pushDebugLog("token.sync.error", { trigger: normalizedTrigger, error: message });
   } finally {
     syncInProgress = false;
     drainPendingTokenSync();
