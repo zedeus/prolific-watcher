@@ -1,33 +1,22 @@
 # Prolific Watcher Extension
 
-Firefox extension for background token + studies traffic sync.
+Firefox extension for syncing Prolific activity to the local Prolific Watcher app.
 
-## Sends Data To
+## What It Does
 
-- `POST http://localhost:8080/receive-token`
-- `POST http://localhost:8080/receive-studies-headers`
-- `POST http://localhost:8080/receive-studies-refresh`
-- `POST http://localhost:8080/receive-studies-response` (when response-body capture is supported)
+- Captures OIDC token from Prolific tab localStorage and syncs token to backend.
+- Captures studies request headers from Prolific API requests.
+- Tracks studies and submission updates for the popup dashboard.
+- Auto-open of Prolific tab is configurable from popup settings.
 
 ## Install (Firefox)
 
 1. Open `about:debugging#/runtime/this-firefox`
 2. Click `Load Temporary Add-on...`
-3. Choose `manifest.json` in this folder
+3. Select `manifest.json` in this folder
 
-## Behavior
+## Use
 
-- Automatic background sync on startup/install/alarm/tab updates.
-- Always re-sends current token when read.
-- Captures studies request headers passively.
-- Captures studies response bodies via `webRequestFilterResponse`.
-- Auto-open Prolific tab can be toggled in popup settings.
-
-## Popup
-
-Tabs:
-- `Live` - current cached studies
-- `Feed` - availability event history
-- `Settings` - toggle + full debug panel
-
-Debug panel shows capture support, counters, and recent debug log entries.
+- Keep the backend app running.
+- Stay logged into Prolific in Firefox.
+- Open the extension popup to view live studies, activity feed, and submissions.
