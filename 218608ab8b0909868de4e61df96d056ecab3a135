@@ -1,0 +1,21 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.5",
+  "base_commit_sha": "218608ab8b0909868de4e61df96d056ecab3a135",
+  "prompts": {
+    "2d0fb757abb5ba0a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ca16a-1478-7112-b21b-39e05474411b",
+        "model": "gpt-5.3-codex"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 973,
+      "total_deletions": 0,
+      "accepted_lines": 973,
+      "overriden_lines": 0
+    }
+  }
+}
