@@ -11,7 +11,7 @@ const SERVICE_OFFLINE_MESSAGE = "Local service offline, start the Go server to c
 const SERVICE_CONNECTING_MESSAGE = "Local service connecting; retrying shortly.";
 const SERVICE_WS_URL = SERVICE_BASE_URL.replace(/^http/i, "ws") + "/ws";
 const SERVICE_WS_HEARTBEAT_INTERVAL_MS = 10_000;
-const SERVICE_WS_HEARTBEAT_TIMEOUT_MS = 25_000;
+const SERVICE_WS_HEARTBEAT_TIMEOUT_MS = 15_000;
 const SERVICE_WS_RECONNECT_BASE_DELAY_MS = 500;
 const SERVICE_WS_RECONNECT_MAX_DELAY_MS = 15_000;
 const SERVICE_WS_RECONNECT_JITTER_MS = 250;
@@ -73,7 +73,20 @@ const SERVICE_WS_SERVER_EVENT_TYPES = Object.freeze({
 
 const STATE_KEY = "syncState";
 const STUDIES_HEADERS_FINGERPRINT_KEY = "lastSentStudiesHeadersFingerprint";
+const PRIORITY_KNOWN_STUDIES_STATE_KEY = "priorityKnownStudiesState";
 const AUTO_OPEN_PROLIFIC_TAB_KEY = "autoOpenProlificTab";
+const AUTO_OPEN_PRIORITY_STUDIES_KEY = "autoOpenPriorityStudies";
+const PRIORITY_FILTER_AUTO_OPEN_NEW_TAB_KEY = "priorityFilterAutoOpenInNewTab";
+const PRIORITY_FILTER_ALERT_SOUND_ENABLED_KEY = "priorityFilterAlertSoundEnabled";
+const PRIORITY_FILTER_ALERT_SOUND_TYPE_KEY = "priorityFilterAlertSoundType";
+const PRIORITY_FILTER_ALERT_SOUND_VOLUME_KEY = "priorityFilterAlertSoundVolume";
+const PRIORITY_FILTER_ALERT_SOUND_DURATION_MS_KEY = "priorityFilterAlertSoundDurationMS";
+const PRIORITY_FILTER_MIN_REWARD_KEY = "priorityFilterMinimumReward";
+const PRIORITY_FILTER_MIN_HOURLY_REWARD_KEY = "priorityFilterMinimumHourlyReward";
+const PRIORITY_FILTER_MAX_ESTIMATED_MINUTES_KEY = "priorityFilterMaximumEstimatedMinutes";
+const PRIORITY_FILTER_MIN_PLACES_KEY = "priorityFilterMinimumPlaces";
+const PRIORITY_FILTER_ALWAYS_OPEN_KEYWORDS_KEY = "priorityFilterKeywords";
+const PRIORITY_FILTER_IGNORE_KEYWORDS_KEY = "priorityFilterIgnoreKeywords";
 const STUDIES_REFRESH_MIN_DELAY_SECONDS_KEY = "studiesRefreshMinDelaySeconds";
 const STUDIES_REFRESH_AVERAGE_DELAY_SECONDS_KEY = "studiesRefreshAverageDelaySeconds";
 const STUDIES_REFRESH_SPREAD_SECONDS_KEY = "studiesRefreshSpreadSeconds";
@@ -86,6 +99,43 @@ const MIN_STUDIES_REFRESH_AVERAGE_DELAY_SECONDS = 5;
 const MAX_STUDIES_REFRESH_MIN_DELAY_SECONDS = 60;
 const MAX_STUDIES_REFRESH_AVERAGE_DELAY_SECONDS = 60;
 const MAX_STUDIES_REFRESH_SPREAD_SECONDS = 60;
+const DEFAULT_PRIORITY_FILTER_MIN_REWARD = 0;
+const DEFAULT_PRIORITY_FILTER_MIN_HOURLY_REWARD = 10;
+const DEFAULT_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES = 20;
+const DEFAULT_PRIORITY_FILTER_MIN_PLACES = 1;
+const MIN_PRIORITY_FILTER_MIN_REWARD = 0;
+const MAX_PRIORITY_FILTER_MIN_REWARD = 100;
+const MIN_PRIORITY_FILTER_MIN_HOURLY_REWARD = 0;
+const MAX_PRIORITY_FILTER_MIN_HOURLY_REWARD = 100;
+const MIN_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES = 1;
+const MAX_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES = 240;
+const MIN_PRIORITY_FILTER_MIN_PLACES = 1;
+const MAX_PRIORITY_FILTER_MIN_PLACES = 1000;
+const MAX_PRIORITY_FILTER_KEYWORDS = 20;
+const MAX_PRIORITY_STUDY_AUTO_OPEN_PER_BATCH = 3;
+const PRIORITY_KNOWN_STUDIES_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_PRIORITY_KNOWN_STUDIES = 3000;
+const PRIORITY_ACTION_SEEN_TTL_MS = 15 * 60 * 1000;
+const MAX_PRIORITY_ACTION_SEEN_STUDIES = 1000;
+const PRIORITY_ALERT_COOLDOWN_MS = 7000;
+const DEFAULT_PRIORITY_ALERT_SOUND_TYPE = "pay";
+const DEFAULT_PRIORITY_ALERT_SOUND_VOLUME = 100;
+const DEFAULT_PRIORITY_ALERT_SOUND_DURATION_MS = 1400;
+const MIN_PRIORITY_ALERT_SOUND_VOLUME = 0;
+const MAX_PRIORITY_ALERT_SOUND_VOLUME = 100;
+const MIN_PRIORITY_ALERT_SOUND_DURATION_MS = 200;
+const MAX_PRIORITY_ALERT_SOUND_DURATION_MS = 5000;
+const PRIORITY_ALERT_SOUND_TYPE_TO_BASE64_PATH = Object.freeze({
+  pay: "sounds/pay.base64",
+  metal_gear: "sounds/metal_gear.base64",
+  twitch: "sounds/twitch.base64",
+  chime: "sounds/chime.base64",
+  money: "sounds/money.base64",
+  samsung: "sounds/samsung.base64",
+  lbp: "sounds/lbp.base64",
+  taco: "sounds/taco.base64"
+});
+const PRIORITY_ALERT_SOUND_TYPES = new Set(Object.keys(PRIORITY_ALERT_SOUND_TYPE_TO_BASE64_PATH));
 const DEBUG_LOG_LIMIT = 200;
 const DEBUG_LOG_SUPPRESSED_EVENTS = new Set([
   "alarm.scheduled",
@@ -131,6 +181,55 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+const priorityModules = globalThis.ProlificWatcherModules || {};
+if (!priorityModules.domain || !priorityModules.settings || !priorityModules.state || !priorityModules.actions || !priorityModules.adapters) {
+  throw new Error("Priority modules failed to load.");
+}
+
+const priorityDomain = priorityModules.domain.createPriorityDomain();
+const prioritySettings = priorityModules.settings.createPrioritySettings({
+  chrome,
+  keys: {
+    enabled: AUTO_OPEN_PRIORITY_STUDIES_KEY,
+    autoOpenInNewTab: PRIORITY_FILTER_AUTO_OPEN_NEW_TAB_KEY,
+    alertSoundEnabled: PRIORITY_FILTER_ALERT_SOUND_ENABLED_KEY,
+    alertSoundType: PRIORITY_FILTER_ALERT_SOUND_TYPE_KEY,
+    alertSoundVolume: PRIORITY_FILTER_ALERT_SOUND_VOLUME_KEY,
+    alertSoundDurationMS: PRIORITY_FILTER_ALERT_SOUND_DURATION_MS_KEY,
+    minimumReward: PRIORITY_FILTER_MIN_REWARD_KEY,
+    minimumHourlyReward: PRIORITY_FILTER_MIN_HOURLY_REWARD_KEY,
+    maximumEstimatedMinutes: PRIORITY_FILTER_MAX_ESTIMATED_MINUTES_KEY,
+    minimumPlaces: PRIORITY_FILTER_MIN_PLACES_KEY,
+    alwaysOpenKeywords: PRIORITY_FILTER_ALWAYS_OPEN_KEYWORDS_KEY,
+    ignoreKeywords: PRIORITY_FILTER_IGNORE_KEYWORDS_KEY
+  },
+  limits: {
+    maxKeywords: MAX_PRIORITY_FILTER_KEYWORDS,
+    minMinReward: MIN_PRIORITY_FILTER_MIN_REWARD,
+    maxMinReward: MAX_PRIORITY_FILTER_MIN_REWARD,
+    minMinHourlyReward: MIN_PRIORITY_FILTER_MIN_HOURLY_REWARD,
+    maxMinHourlyReward: MAX_PRIORITY_FILTER_MIN_HOURLY_REWARD,
+    minEstimatedMinutes: MIN_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES,
+    maxEstimatedMinutes: MAX_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES,
+    minMinimumPlaces: MIN_PRIORITY_FILTER_MIN_PLACES,
+    maxMinimumPlaces: MAX_PRIORITY_FILTER_MIN_PLACES,
+    minAlertSoundVolume: MIN_PRIORITY_ALERT_SOUND_VOLUME,
+    maxAlertSoundVolume: MAX_PRIORITY_ALERT_SOUND_VOLUME,
+    minAlertSoundDurationMS: MIN_PRIORITY_ALERT_SOUND_DURATION_MS,
+    maxAlertSoundDurationMS: MAX_PRIORITY_ALERT_SOUND_DURATION_MS
+  },
+  defaults: {
+    minimumRewardMajor: DEFAULT_PRIORITY_FILTER_MIN_REWARD,
+    minimumHourlyRewardMajor: DEFAULT_PRIORITY_FILTER_MIN_HOURLY_REWARD,
+    maximumEstimatedMinutes: DEFAULT_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES,
+    minimumPlacesAvailable: DEFAULT_PRIORITY_FILTER_MIN_PLACES,
+    alertSoundType: DEFAULT_PRIORITY_ALERT_SOUND_TYPE,
+    alertSoundVolume: DEFAULT_PRIORITY_ALERT_SOUND_VOLUME,
+    alertSoundDurationMS: DEFAULT_PRIORITY_ALERT_SOUND_DURATION_MS
+  },
+  priorityAlertSoundTypes: PRIORITY_ALERT_SOUND_TYPES
+});
+
 async function setState(patch) {
   await updateState((previous) => ({
     ...previous,
@@ -173,6 +272,41 @@ function isNetworkFailureMessage(message) {
     lowered.includes("network request failed") ||
     lowered.includes("load failed") ||
     lowered.includes("fetch resource");
+}
+
+function isServiceConnectingMessage(message) {
+  return String(message || "").trim() === SERVICE_CONNECTING_MESSAGE;
+}
+
+async function clearTransientServiceConnectingState() {
+  await updateState((previous) => {
+    const patch = {};
+
+    if (previous.token_ok === false && isServiceConnectingMessage(previous.token_reason)) {
+      patch.token_ok = null;
+      patch.token_reason = "";
+    }
+    if (previous.studies_headers_ok === false && isServiceConnectingMessage(previous.studies_headers_reason)) {
+      patch.studies_headers_ok = null;
+      patch.studies_headers_reason = "";
+    }
+    if (previous.studies_refresh_ok === false && isServiceConnectingMessage(previous.studies_refresh_reason)) {
+      patch.studies_refresh_ok = null;
+      patch.studies_refresh_reason = "";
+    }
+    if (
+      previous.studies_response_capture_ok === false &&
+      isServiceConnectingMessage(previous.studies_response_capture_reason)
+    ) {
+      patch.studies_response_capture_ok = null;
+      patch.studies_response_capture_reason = "";
+    }
+
+    if (!Object.keys(patch).length) {
+      return null;
+    }
+    return patch;
+  });
 }
 
 function parseInternalAPIURL(raw) {
@@ -340,6 +474,42 @@ function normalizeStudiesRefreshPolicy(rawMinimumDelaySeconds, rawAverageDelaySe
     cycle_seconds: STUDIES_REFRESH_CYCLE_SECONDS
   };
 }
+
+const {
+  normalizePriorityStudyFilter,
+  getPriorityStudyFilterSettings
+} = prioritySettings;
+
+const {
+  extractStudiesResults,
+  extractStudyID,
+  parseStudyIDFromProlificURL,
+  studyURLFromID,
+  parseTimestampMS,
+  normalizeStudyIDList,
+  normalizePrioritySnapshotEvent,
+  evaluatePrioritySnapshotEvent
+} = priorityDomain;
+
+const priorityStateRuntime = priorityModules.state.createPriorityState({
+  chrome,
+  storageKey: PRIORITY_KNOWN_STUDIES_STATE_KEY,
+  nowIso,
+  parseTimestampMS,
+  normalizePrioritySnapshotEvent,
+  limits: {
+    knownStudiesTTLMS: PRIORITY_KNOWN_STUDIES_TTL_MS,
+    maxKnownStudies: MAX_PRIORITY_KNOWN_STUDIES,
+    actionSeenTTLMS: PRIORITY_ACTION_SEEN_TTL_MS,
+    maxActionSeenStudies: MAX_PRIORITY_ACTION_SEEN_STUDIES
+  },
+  onQueueError: (error, event) => {
+    pushDebugLog("tab.priority_auto_open.error", {
+      trigger: event.trigger,
+      error: stringifyError(error)
+    });
+  }
+});
 
 async function getStudiesRefreshPolicySettings() {
   const data = await chrome.storage.local.get([
@@ -761,6 +931,7 @@ function ensureServiceSocketConnected(reason) {
     serviceSocketLastHeartbeatAckAt = Date.now();
     updateServiceSocketState(true, `connected:${reason}`);
     pushDebugLog("service.ws.connected", { reason });
+    clearTransientServiceConnectingState();
     startServiceSocketHeartbeatLoop();
     scheduleTokenSyncRetry("service.ws.connected", 0);
   };
@@ -786,6 +957,7 @@ function ensureServiceSocketConnected(reason) {
     if (messageType === SERVICE_WS_SERVER_EVENT_TYPES.studiesRefreshEvent) {
       const observedAt = extractObservedAtFromStudiesRefreshEvent(parsed);
       notifyPopupDashboardUpdated("service.ws.studies_refresh_event", observedAt);
+      queuePrioritySnapshotEvent(priorityAdapters.extractPrioritySnapshotEventFromStudiesRefreshMessage(parsed, extractObservedAtFromStudiesRefreshEvent));
       return;
     }
 
@@ -899,6 +1071,97 @@ async function queryProlificTabs() {
   const tabs = await chrome.tabs.query({ url: PROLIFIC_PATTERNS });
   return Array.isArray(tabs) ? tabs : [];
 }
+
+const priorityActionsRuntime = priorityModules.actions.createPriorityActions({
+  chrome,
+  nowIso,
+  queryProlificTabs,
+  extractStudyID,
+  parseStudyIDFromProlificURL,
+  studyURLFromID,
+  pushDebugLog,
+  bumpCounter,
+  setState,
+  limits: {
+    minAlertSoundVolume: MIN_PRIORITY_ALERT_SOUND_VOLUME,
+    maxAlertSoundVolume: MAX_PRIORITY_ALERT_SOUND_VOLUME,
+    defaultAlertSoundVolume: DEFAULT_PRIORITY_ALERT_SOUND_VOLUME,
+    alertCooldownMS: PRIORITY_ALERT_COOLDOWN_MS,
+    maxAutoOpenPerBatch: MAX_PRIORITY_STUDY_AUTO_OPEN_PER_BATCH
+  },
+  sounds: {
+    types: PRIORITY_ALERT_SOUND_TYPES,
+    defaultType: DEFAULT_PRIORITY_ALERT_SOUND_TYPE,
+    pathByType: PRIORITY_ALERT_SOUND_TYPE_TO_BASE64_PATH
+  }
+});
+
+const priorityAdapters = priorityModules.adapters.createPriorityAdapters({
+  nowIso,
+  extractStudiesResults,
+  normalizeStudyIDList
+});
+
+async function handlePriorityAlertAction(filter, matchingStudies, trigger) {
+  const candidateStudies = priorityStateRuntime.selectAlertCandidates(matchingStudies);
+  if (!candidateStudies.length) {
+    return;
+  }
+  priorityStateRuntime.markAlertSeen(candidateStudies);
+  await priorityActionsRuntime.handleAlertAction(filter, candidateStudies, trigger);
+}
+
+async function handlePriorityAutoOpenAction(filter, matchingStudies, trigger) {
+  const candidateStudies = priorityStateRuntime.selectAutoOpenCandidates(matchingStudies);
+  if (!candidateStudies.length) {
+    return;
+  }
+  priorityStateRuntime.markAutoOpenSeen(candidateStudies);
+  await priorityActionsRuntime.handleAutoOpenAction(filter, candidateStudies, trigger);
+}
+
+function queuePrioritySnapshotEvent(rawEvent) {
+  priorityStateRuntime.queueEvent(rawEvent, processPrioritySnapshotEvent);
+}
+
+async function processPrioritySnapshotEvent(event) {
+  await priorityStateRuntime.ensureHydrated();
+
+  const filter = await getPriorityStudyFilterSettings();
+  const evaluation = evaluatePrioritySnapshotEvent(priorityStateRuntime.getSnapshot(), event, filter);
+  priorityStateRuntime.setSnapshot(evaluation.nextSnapshot);
+  await priorityStateRuntime.persistSnapshot(evaluation.nextSnapshot, evaluation.event.observedAtMS);
+
+  if (evaluation.isBaseline) {
+    pushDebugLog("tab.priority_auto_open.baseline", {
+      trigger: evaluation.event.trigger,
+      available_count: evaluation.nextSnapshot.knownStudyIDs.size
+    });
+    return;
+  }
+
+  if (!evaluation.newlySeenStudies.length) {
+    return;
+  }
+
+  if (!filter.enabled) {
+    pushDebugLog("tab.priority_auto_open.disabled", {
+      trigger: evaluation.event.trigger,
+      candidate_count: evaluation.newlySeenStudies.length
+    });
+    return;
+  }
+
+  if (!evaluation.newPriorityStudies.length) {
+    return;
+  }
+
+  await Promise.all([
+    handlePriorityAlertAction(filter, evaluation.newPriorityStudies, evaluation.event.trigger),
+    handlePriorityAutoOpenAction(filter, evaluation.newPriorityStudies, evaluation.event.trigger)
+  ]);
+}
+
 
 async function hasTrackedAutoOpenedTab() {
   if (typeof lastAutoOpenedTabId !== "number") {
@@ -1277,6 +1540,10 @@ const CAPTURED_JSON_RESPONSE_OPTIONS = Object.freeze({
     counterPrefix: "studies_response",
     eventPrefix: "studies.response",
     extraHooks: {
+      onParsed: (parsed, context) => {
+        const event = priorityAdapters.toFullSnapshotEvent(parsed, context);
+        if (event) { queuePrioritySnapshotEvent(event); }
+      },
       onSkip: (details) => {
         pushDebugLog("studies.response.capture.skip_non_collection", {
           url: details.url,
@@ -1304,9 +1571,18 @@ const CAPTURED_JSON_RESPONSE_OPTIONS = Object.freeze({
         });
       },
       onIngestError: (error, context) => {
+        const message = stringifyError(error);
+        if (isServiceConnectingMessage(message)) {
+          setState({
+            studies_response_capture_ok: null,
+            studies_response_capture_reason: "",
+            studies_response_capture_last_at: context.observedAt
+          });
+          return;
+        }
         setState({
           studies_response_capture_ok: false,
-          studies_response_capture_reason: stringifyError(error),
+          studies_response_capture_reason: message,
           studies_response_capture_last_at: context.observedAt
         });
       },
@@ -1369,6 +1645,15 @@ function tapCapturedJSONResponse(details, options, normalizedURLOverride = "") {
         observedAt,
         parsed
       };
+
+      if (typeof options.onParsed === "function") {
+        Promise.resolve(options.onParsed(parsed, context)).catch((error) => {
+          pushDebugLog("studies.response.capture.on_parsed_error", {
+            url: normalizedURL,
+            error: stringifyError(error)
+          });
+        });
+      }
 
       options.postToService({
         url: normalizedURL,
@@ -1814,6 +2099,7 @@ async function boot(trigger, logEvent) {
     await pushDebugLog(logEvent, {});
   }
   ensureServiceSocketConnected(`boot:${trigger}`);
+  await priorityStateRuntime.ensureHydrated();
   schedule();
   registerCaptureListeners();
   await requestTokenSync(trigger);
@@ -1856,7 +2142,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   requestTokenSync("tabs.onRemoved");
 });
 
-function buildRefreshSettingsResponse(refreshPolicy, autoOpenEnabled) {
+function buildRefreshSettingsResponse(refreshPolicy, autoOpenEnabled, priorityFilter) {
   const settings = {
     studies_refresh_min_delay_seconds: refreshPolicy.minimum_delay_seconds,
     studies_refresh_average_delay_seconds: refreshPolicy.average_delay_seconds,
@@ -1865,6 +2151,25 @@ function buildRefreshSettingsResponse(refreshPolicy, autoOpenEnabled) {
   };
   if (typeof autoOpenEnabled === "boolean") {
     settings.auto_open_prolific_tab = autoOpenEnabled;
+  }
+  if (priorityFilter && typeof priorityFilter === "object") {
+    settings.auto_open_priority_studies = priorityFilter.enabled;
+    settings.priority_filter_enabled = priorityFilter.enabled;
+    settings.priority_filter_auto_open_in_new_tab = priorityFilter.auto_open_in_new_tab !== false;
+    settings.priority_filter_alert_sound_enabled = priorityFilter.alert_sound_enabled !== false;
+    settings.priority_filter_alert_sound_type = priorityFilter.alert_sound_type || DEFAULT_PRIORITY_ALERT_SOUND_TYPE;
+    settings.priority_filter_alert_sound_volume = priorityFilter.alert_sound_volume;
+    settings.priority_filter_alert_sound_duration_ms = priorityFilter.alert_sound_duration_ms;
+    settings.priority_filter_minimum_reward = priorityFilter.minimum_reward_major;
+    settings.priority_filter_minimum_hourly_reward = priorityFilter.minimum_hourly_reward_major;
+    settings.priority_filter_maximum_estimated_minutes = priorityFilter.maximum_estimated_minutes;
+    settings.priority_filter_minimum_places = priorityFilter.minimum_places_available;
+    settings.priority_filter_always_open_keywords = Array.isArray(priorityFilter.always_open_keywords)
+      ? priorityFilter.always_open_keywords
+      : [];
+    settings.priority_filter_ignore_keywords = Array.isArray(priorityFilter.ignore_keywords)
+      ? priorityFilter.ignore_keywords
+      : [];
   }
   return settings;
 }
@@ -1895,6 +2200,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.action === "getSettings") {
     chrome.storage.local.get([
       AUTO_OPEN_PROLIFIC_TAB_KEY,
+      AUTO_OPEN_PRIORITY_STUDIES_KEY,
+      PRIORITY_FILTER_AUTO_OPEN_NEW_TAB_KEY,
+      PRIORITY_FILTER_ALERT_SOUND_ENABLED_KEY,
+      PRIORITY_FILTER_ALERT_SOUND_TYPE_KEY,
+      PRIORITY_FILTER_ALERT_SOUND_VOLUME_KEY,
+      PRIORITY_FILTER_ALERT_SOUND_DURATION_MS_KEY,
+      PRIORITY_FILTER_MIN_REWARD_KEY,
+      PRIORITY_FILTER_MIN_HOURLY_REWARD_KEY,
+      PRIORITY_FILTER_MAX_ESTIMATED_MINUTES_KEY,
+      PRIORITY_FILTER_MIN_PLACES_KEY,
+      PRIORITY_FILTER_ALWAYS_OPEN_KEYWORDS_KEY,
+      PRIORITY_FILTER_IGNORE_KEYWORDS_KEY,
       STUDIES_REFRESH_MIN_DELAY_SECONDS_KEY,
       STUDIES_REFRESH_AVERAGE_DELAY_SECONDS_KEY,
       STUDIES_REFRESH_SPREAD_SECONDS_KEY
@@ -1904,11 +2221,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         data[STUDIES_REFRESH_AVERAGE_DELAY_SECONDS_KEY],
         data[STUDIES_REFRESH_SPREAD_SECONDS_KEY]
       );
+      const priorityFilter = normalizePriorityStudyFilter(
+        data[AUTO_OPEN_PRIORITY_STUDIES_KEY] === true,
+        data[PRIORITY_FILTER_AUTO_OPEN_NEW_TAB_KEY] !== false,
+        data[PRIORITY_FILTER_ALERT_SOUND_ENABLED_KEY] !== false,
+        data[PRIORITY_FILTER_ALERT_SOUND_TYPE_KEY],
+        data[PRIORITY_FILTER_ALERT_SOUND_VOLUME_KEY],
+        data[PRIORITY_FILTER_ALERT_SOUND_DURATION_MS_KEY],
+        data[PRIORITY_FILTER_MIN_REWARD_KEY],
+        data[PRIORITY_FILTER_MIN_HOURLY_REWARD_KEY],
+        data[PRIORITY_FILTER_MAX_ESTIMATED_MINUTES_KEY],
+        data[PRIORITY_FILTER_MIN_PLACES_KEY],
+        data[PRIORITY_FILTER_ALWAYS_OPEN_KEYWORDS_KEY],
+        data[PRIORITY_FILTER_IGNORE_KEYWORDS_KEY]
+      );
       sendResponse({
         ok: true,
         settings: buildRefreshSettingsResponse(
           refreshPolicy,
-          data[AUTO_OPEN_PROLIFIC_TAB_KEY] !== false
+          data[AUTO_OPEN_PROLIFIC_TAB_KEY] !== false,
+          priorityFilter
         )
       });
     });
@@ -1956,6 +2288,68 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
 
       await requestTokenSync("settings.auto_open.enabled");
+    });
+  }
+
+  if (message && message.action === "setPriorityFilter") {
+    return runMessageTask(sendResponse, async () => {
+      const priorityFilter = normalizePriorityStudyFilter(
+        message.enabled,
+        message.auto_open_in_new_tab,
+        message.alert_sound_enabled,
+        message.alert_sound_type,
+        message.alert_sound_volume,
+        message.alert_sound_duration_ms,
+        message.minimum_reward_major,
+        message.minimum_hourly_reward_major,
+        message.maximum_estimated_minutes,
+        message.minimum_places_available,
+        message.always_open_keywords,
+        message.ignore_keywords
+      );
+
+      await storageSetLocal({
+        [AUTO_OPEN_PRIORITY_STUDIES_KEY]: priorityFilter.enabled,
+        [PRIORITY_FILTER_AUTO_OPEN_NEW_TAB_KEY]: priorityFilter.auto_open_in_new_tab,
+        [PRIORITY_FILTER_ALERT_SOUND_ENABLED_KEY]: priorityFilter.alert_sound_enabled,
+        [PRIORITY_FILTER_ALERT_SOUND_TYPE_KEY]: priorityFilter.alert_sound_type,
+        [PRIORITY_FILTER_ALERT_SOUND_VOLUME_KEY]: priorityFilter.alert_sound_volume,
+        [PRIORITY_FILTER_ALERT_SOUND_DURATION_MS_KEY]: priorityFilter.alert_sound_duration_ms,
+        [PRIORITY_FILTER_MIN_REWARD_KEY]: priorityFilter.minimum_reward_major,
+        [PRIORITY_FILTER_MIN_HOURLY_REWARD_KEY]: priorityFilter.minimum_hourly_reward_major,
+        [PRIORITY_FILTER_MAX_ESTIMATED_MINUTES_KEY]: priorityFilter.maximum_estimated_minutes,
+        [PRIORITY_FILTER_MIN_PLACES_KEY]: priorityFilter.minimum_places_available,
+        [PRIORITY_FILTER_ALWAYS_OPEN_KEYWORDS_KEY]: priorityFilter.always_open_keywords,
+        [PRIORITY_FILTER_IGNORE_KEYWORDS_KEY]: priorityFilter.ignore_keywords
+      });
+
+      await setState({
+        auto_open_priority_studies: priorityFilter.enabled,
+        priority_filter_enabled: priorityFilter.enabled,
+        priority_filter_auto_open_in_new_tab: priorityFilter.auto_open_in_new_tab,
+        priority_filter_alert_sound_enabled: priorityFilter.alert_sound_enabled,
+        priority_filter_alert_sound_type: priorityFilter.alert_sound_type,
+        priority_filter_alert_sound_volume: priorityFilter.alert_sound_volume,
+        priority_filter_alert_sound_duration_ms: priorityFilter.alert_sound_duration_ms,
+        priority_filter_minimum_reward: priorityFilter.minimum_reward_major,
+        priority_filter_minimum_hourly_reward: priorityFilter.minimum_hourly_reward_major,
+        priority_filter_maximum_estimated_minutes: priorityFilter.maximum_estimated_minutes,
+        priority_filter_minimum_places: priorityFilter.minimum_places_available,
+        priority_filter_always_open_keywords: priorityFilter.always_open_keywords,
+        priority_filter_ignore_keywords: priorityFilter.ignore_keywords
+      });
+      await pushDebugLog("settings.priority_filter.updated", priorityFilter);
+
+      const refreshPolicy = await getStudiesRefreshPolicySettings();
+      const autoOpenState = await chrome.storage.local.get([AUTO_OPEN_PROLIFIC_TAB_KEY]);
+      sendResponse({
+        ok: true,
+        settings: buildRefreshSettingsResponse(
+          refreshPolicy,
+          autoOpenState[AUTO_OPEN_PROLIFIC_TAB_KEY] !== false,
+          priorityFilter
+        )
+      });
     });
   }
 

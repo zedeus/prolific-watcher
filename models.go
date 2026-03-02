@@ -36,11 +36,13 @@ type StudiesRefreshState struct {
 }
 
 type StudiesRefreshUpdate struct {
-	ObservedAt           time.Time             `json:"observed_at"`
-	Source               string                `json:"source"`
-	URL                  string                `json:"url"`
-	StatusCode           int                   `json:"status_code"`
-	DelayedRefreshPolicy *DelayedRefreshPolicy `json:"delayed_refresh_policy,omitempty"`
+	ObservedAt                time.Time             `json:"observed_at"`
+	Source                    string                `json:"source"`
+	URL                       string                `json:"url"`
+	StatusCode                int                   `json:"status_code"`
+	NewlyAvailableStudies     []normalizedStudy     `json:"newly_available_studies,omitempty"`
+	BecameUnavailableStudyIDs []string              `json:"became_unavailable_study_ids,omitempty"`
+	DelayedRefreshPolicy      *DelayedRefreshPolicy `json:"delayed_refresh_policy,omitempty"`
 }
 
 type DelayedRefreshPolicy struct {

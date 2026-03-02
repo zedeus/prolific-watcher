@@ -87,7 +87,7 @@ func (s *Service) processReceiveStudiesRefresh(payload StudiesRefreshUpdate) (ma
 		payload.URL = normalizedURL
 	}
 
-	if err := s.markStudiesRefresh(payload.ObservedAt, payload.Source, payload.URL, payload.StatusCode); err != nil {
+	if err := s.markStudiesRefresh(payload); err != nil {
 		logWarn("studies.refresh.persist_failed", "error", err)
 		return nil, internalServerError("failed to persist studies refresh", err)
 	}
@@ -146,7 +146,12 @@ func (s *Service) processReceiveStudiesResponse(payload interceptedStudiesRespon
 	}
 
 	if payload.StatusCode != 0 && payload.StatusCode != http.StatusOK {
-		if err := s.markStudiesRefresh(payload.ObservedAt, "extension.intercepted_response", payload.URL, payload.StatusCode); err != nil {
+		if err := s.markStudiesRefresh(StudiesRefreshUpdate{
+			ObservedAt: payload.ObservedAt,
+			Source:     "extension.intercepted_response",
+			URL:        payload.URL,
+			StatusCode: payload.StatusCode,
+		}); err != nil {
 			return nil, internalServerError("failed to persist studies refresh status", err)
 		}
 		return map[string]any{"success": true}, nil

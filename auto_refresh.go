@@ -404,7 +404,12 @@ func (s *Service) runDelayedServiceRefresh(triggerSource string, policy DelayedR
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		if err := s.markStudiesRefresh(time.Now().UTC(), delayedRefreshSource, targetURL, resp.StatusCode); err != nil {
+		if err := s.markStudiesRefresh(StudiesRefreshUpdate{
+			ObservedAt: time.Now().UTC(),
+			Source:     delayedRefreshSource,
+			URL:        targetURL,
+			StatusCode: resp.StatusCode,
+		}); err != nil {
 			logWarn("refresh.delayed.persist_status_failed", "error", err)
 		}
 		return fmt.Errorf("upstream status %d", resp.StatusCode)

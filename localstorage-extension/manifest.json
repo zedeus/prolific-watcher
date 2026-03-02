@@ -28,6 +28,11 @@
   },
   "background": {
     "scripts": [
+      "background/domain.js",
+      "background/settings.js",
+      "background/state.js",
+      "background/actions.js",
+      "background/adapters.js",
       "background.js"
     ]
   },

@@ -526,20 +526,14 @@ func (s *Service) ingestParticipantSubmissionsPayload(
 	return total, upserted, nil
 }
 
-func (s *Service) markStudiesRefresh(observedAt time.Time, source, url string, statusCode int) error {
+func (s *Service) markStudiesRefresh(update StudiesRefreshUpdate) error {
 	if s.stateStore == nil {
 		return nil
 	}
-	if source == "" {
-		source = "unknown"
+	if update.Source == "" {
+		update.Source = "unknown"
 	}
-
-	update := StudiesRefreshUpdate{
-		ObservedAt: utcNowOr(observedAt),
-		Source:     source,
-		URL:        url,
-		StatusCode: statusCode,
-	}
+	update.ObservedAt = utcNowOr(update.ObservedAt)
 	if err := s.stateStore.SetStudiesRefresh(update); err != nil {
 		return err
 	}
@@ -560,12 +554,16 @@ func (s *Service) ingestStudiesPayload(
 		statusCode = http.StatusOK
 	}
 
-	if err := s.markStudiesRefresh(observedAt, source, sourceURL, statusCode); err != nil {
-		logWarn("studies.refresh.persist_state_failed", "error", err)
-	}
-
 	normalizedBody, err := normalizeStudiesResponse(body)
 	if err != nil {
+		if err := s.markStudiesRefresh(StudiesRefreshUpdate{
+			ObservedAt: observedAt,
+			Source:     source,
+			URL:        sourceURL,
+			StatusCode: statusCode,
+		}); err != nil {
+			logWarn("studies.refresh.persist_state_failed", "error", err)
+		}
 		return nil, nil, err
 	}
 	if err := s.studiesStore.StoreNormalizedStudies(normalizedBody.Results, observedAt); err != nil {
@@ -584,6 +582,40 @@ func (s *Service) ingestStudiesPayload(
 		for _, change := range availability.BecameUnavailable {
 			logInfo("study_event", "event_type", "unavailable", "study_id", change.StudyID, "name", change.Name, "observed_at", availability.ObservedAt)
 		}
+	}
+
+	refreshUpdate := StudiesRefreshUpdate{
+		ObservedAt: observedAt,
+		Source:     source,
+		URL:        sourceURL,
+		StatusCode: statusCode,
+	}
+	if availability != nil {
+		newlyAvailableIDs := make(map[string]struct{}, len(availability.NewlyAvailable))
+		for _, change := range availability.NewlyAvailable {
+			newlyAvailableIDs[change.StudyID] = struct{}{}
+		}
+
+		newlyAvailableStudies := make([]normalizedStudy, 0, len(newlyAvailableIDs))
+		for _, study := range normalizedBody.Results {
+			if _, ok := newlyAvailableIDs[study.ID]; !ok {
+				continue
+			}
+			newlyAvailableStudies = append(newlyAvailableStudies, study)
+		}
+		refreshUpdate.NewlyAvailableStudies = newlyAvailableStudies
+
+		becameUnavailableStudyIDs := make([]string, 0, len(availability.BecameUnavailable))
+		for _, change := range availability.BecameUnavailable {
+			if strings.TrimSpace(change.StudyID) == "" {
+				continue
+			}
+			becameUnavailableStudyIDs = append(becameUnavailableStudyIDs, change.StudyID)
+		}
+		refreshUpdate.BecameUnavailableStudyIDs = becameUnavailableStudyIDs
+	}
+	if err := s.markStudiesRefresh(refreshUpdate); err != nil {
+		logWarn("studies.refresh.persist_state_failed", "error", err)
 	}
 
 	return normalizedBody, availability, nil
@@ -693,7 +725,12 @@ func (s *Service) handleStudiesForceRefresh(w http.ResponseWriter, r *http.Reque
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		if err := s.markStudiesRefresh(time.Now().UTC(), "service.studies_refresh", targetURL, resp.StatusCode); err != nil {
+		if err := s.markStudiesRefresh(StudiesRefreshUpdate{
+			ObservedAt: time.Now().UTC(),
+			Source:     "service.studies_refresh",
+			URL:        targetURL,
+			StatusCode: resp.StatusCode,
+		}); err != nil {
 			logWarn("studies.refresh.persist_state_failed", "source", "service.studies_refresh", "error", err)
 		}
 		writePassthroughResponse(w, resp.StatusCode, resp.Header.Get("Content-Type"), resp.Body)

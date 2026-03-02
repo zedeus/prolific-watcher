@@ -16,20 +16,20 @@ import (
 )
 
 const (
-	wsTypeAck                   = "ack"
-	wsTypeHeartbeat             = "heartbeat"
-	wsTypeHeartbeatAck          = "heartbeat_ack"
-	wsTypeReceiveToken          = "receive-token"
-	wsTypeClearToken            = "clear-token"
-	wsTypeStudiesHeaders        = "receive-studies-headers"
-	wsTypeStudiesRefresh        = "receive-studies-refresh"
-	wsTypeStudiesResponse       = "receive-studies-response"
-	wsTypeSubmission            = "receive-submission-response"
-	wsTypeParticipantSubs       = "receive-participant-submissions-response"
-	wsTypeScheduleDelayed       = "schedule-delayed-refresh"
-	wsTypeStudiesRefreshEvent   = "studies_refresh_event"
-	wsWriteTimeout              = 10 * time.Second
-	wsReadLimitBytes      int64 = 8 << 20
+	wsTypeAck                       = "ack"
+	wsTypeHeartbeat                 = "heartbeat"
+	wsTypeHeartbeatAck              = "heartbeat_ack"
+	wsTypeReceiveToken              = "receive-token"
+	wsTypeClearToken                = "clear-token"
+	wsTypeStudiesHeaders            = "receive-studies-headers"
+	wsTypeStudiesRefresh            = "receive-studies-refresh"
+	wsTypeStudiesResponse           = "receive-studies-response"
+	wsTypeSubmission                = "receive-submission-response"
+	wsTypeParticipantSubs           = "receive-participant-submissions-response"
+	wsTypeScheduleDelayed           = "schedule-delayed-refresh"
+	wsTypeStudiesRefreshEvent       = "studies_refresh_event"
+	wsWriteTimeout                  = 10 * time.Second
+	wsReadLimitBytes          int64 = 8 << 20
 )
 
 type wsClientMessage struct {
@@ -150,15 +150,22 @@ func (s *Service) writeWSMessage(parentCtx context.Context, client *wsConnClient
 
 func (s *Service) broadcastStudiesRefreshEvent(update StudiesRefreshUpdate) {
 	observedAt := utcNowOr(update.ObservedAt)
+	data := map[string]any{
+		"source":      update.Source,
+		"url":         update.URL,
+		"status_code": update.StatusCode,
+		"observed_at": observedAt.Format(time.RFC3339Nano),
+	}
+	if len(update.NewlyAvailableStudies) > 0 {
+		data["newly_available_studies"] = update.NewlyAvailableStudies
+	}
+	if len(update.BecameUnavailableStudyIDs) > 0 {
+		data["became_unavailable_study_ids"] = update.BecameUnavailableStudyIDs
+	}
 	event := wsServerMessage{
 		Type: wsTypeStudiesRefreshEvent,
-		Data: map[string]any{
-			"source":      update.Source,
-			"url":         update.URL,
-			"status_code": update.StatusCode,
-			"observed_at": observedAt.Format(time.RFC3339Nano),
-		},
-		At: observedAt.Format(time.RFC3339Nano),
+		Data: data,
+		At:   observedAt.Format(time.RFC3339Nano),
 	}
 
 	clients := s.snapshotWSClients()

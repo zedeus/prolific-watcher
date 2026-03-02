@@ -1,4 +1,18 @@
 const autoOpenToggle = document.getElementById("autoOpenToggle");
+const priorityFilterEnabledToggle = document.getElementById("priorityFilterEnabledToggle");
+const priorityAutoOpenInNewTabToggle = document.getElementById("priorityAutoOpenInNewTabToggle");
+const priorityAlertSoundToggle = document.getElementById("priorityAlertSoundToggle");
+const priorityAlertSoundConfig = document.getElementById("priorityAlertSoundConfig");
+const priorityAlertSoundTypeSelect = document.getElementById("priorityAlertSoundTypeSelect");
+const priorityAlertSoundVolumeInput = document.getElementById("priorityAlertSoundVolumeInput");
+const priorityAlertSoundPreviewButton = document.getElementById("priorityAlertSoundPreviewButton");
+const priorityMinRewardInput = document.getElementById("priorityMinRewardInput");
+const priorityMinHourlyInput = document.getElementById("priorityMinHourlyInput");
+const priorityMaxEtaInput = document.getElementById("priorityMaxEtaInput");
+const priorityMinPlacesInput = document.getElementById("priorityMinPlacesInput");
+const priorityAlwaysKeywordsInput = document.getElementById("priorityAlwaysKeywordsInput");
+const priorityIgnoreKeywordsInput = document.getElementById("priorityIgnoreKeywordsInput");
+const priorityFilterSaveButton = document.getElementById("priorityFilterSaveButton");
 const syncDotEl = document.getElementById("syncDot");
 const refreshPrefixEl = document.getElementById("refreshPrefix");
 const latestRefreshEl = document.getElementById("latestRefresh");
@@ -26,6 +40,7 @@ const refreshPlanSummaryEl = document.getElementById("refreshPlanSummary");
 const refreshPlanTrackEl = document.getElementById("refreshPlanTrack");
 
 const SERVICE_OFFLINE_MESSAGE = "Local service offline, start the Go server to continue.";
+const SERVICE_CONNECTING_MESSAGE = "Local service connecting; retrying shortly.";
 const AUTH_REQUIRED_MESSAGE = "Signed out of Prolific. Log in at app.prolific.com to resume syncing.";
 const AUTH_REQUIRED_PANEL_MESSAGE = "Waiting for login.";
 const RETRY_INTERVAL_MS = 5000;
@@ -40,6 +55,35 @@ const MIN_REFRESH_AVERAGE_DELAY_SECONDS = 5;
 const MAX_REFRESH_MIN_DELAY_SECONDS = 60;
 const MAX_REFRESH_AVERAGE_DELAY_SECONDS = 60;
 const MAX_REFRESH_SPREAD_SECONDS = 60;
+const DEFAULT_PRIORITY_MIN_REWARD = 0;
+const DEFAULT_PRIORITY_MIN_HOURLY_REWARD = 10;
+const DEFAULT_PRIORITY_MAX_ESTIMATED_MINUTES = 20;
+const DEFAULT_PRIORITY_MIN_PLACES = 1;
+const MIN_PRIORITY_MIN_REWARD = 0;
+const MAX_PRIORITY_MIN_REWARD = 100;
+const MIN_PRIORITY_MIN_HOURLY_REWARD = 0;
+const MAX_PRIORITY_MIN_HOURLY_REWARD = 100;
+const MIN_PRIORITY_MAX_ESTIMATED_MINUTES = 1;
+const MAX_PRIORITY_MAX_ESTIMATED_MINUTES = 240;
+const MIN_PRIORITY_MIN_PLACES = 1;
+const MAX_PRIORITY_MIN_PLACES = 1000;
+const MAX_PRIORITY_KEYWORDS = 20;
+const DEFAULT_PRIORITY_ALERT_SOUND_TYPE = "pay";
+const DEFAULT_PRIORITY_ALERT_SOUND_VOLUME = 100;
+const DEFAULT_PRIORITY_ALERT_SOUND_DURATION_MS = 1400;
+const MIN_PRIORITY_ALERT_SOUND_VOLUME = 0;
+const MAX_PRIORITY_ALERT_SOUND_VOLUME = 100;
+const PRIORITY_ALERT_SOUND_TYPE_TO_BASE64_PATH = Object.freeze({
+  pay: "sounds/pay.base64",
+  metal_gear: "sounds/metal_gear.base64",
+  twitch: "sounds/twitch.base64",
+  chime: "sounds/chime.base64",
+  money: "sounds/money.base64",
+  samsung: "sounds/samsung.base64",
+  lbp: "sounds/lbp.base64",
+  taco: "sounds/taco.base64"
+});
+const PRIORITY_ALERT_SOUND_TYPES = new Set(Object.keys(PRIORITY_ALERT_SOUND_TYPE_TO_BASE64_PATH));
 const RELATIVE_TIME_FORMATTER = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 const DEBUG_EVENT_LABELS = Object.freeze({
   "token.sync.ok": "Token synced",
@@ -54,9 +98,17 @@ const DEBUG_EVENT_LABELS = Object.freeze({
   "studies.response.ingest.error": "Response ingest failed",
   "studies.response.parse.error": "Response parse failed",
   "studies.response.filter.error": "Response capture failed",
+  "studies.response.capture.on_parsed_error": "Response parse hook failed",
   "studies.headers.capture.ok": "Headers captured",
   "studies.headers.capture.error": "Headers capture failed",
   "settings.auto_open.updated": "Auto-open updated",
+  "settings.priority_filter.updated": "Priority filter saved",
+  "priority.alert.disabled": "Priority alert disabled",
+  "tab.priority_auto_open.created": "Priority study opened",
+  "tab.priority_auto_open.disabled_new_tab": "Priority tab auto-open disabled",
+  "tab.priority_auto_open.error": "Priority auto-open failed",
+  "priority.alert.played": "Priority alert played",
+  "priority.alert.error": "Priority alert failed",
   "settings.studies_refresh_policy.updated": "Cadence saved",
   "settings.studies_refresh_policy.schedule_error": "Cadence schedule failed",
   "settings.studies_refresh_policy.schedule_ok": "Cadence schedule applied",
@@ -81,6 +133,26 @@ let reactiveRefreshPending = false;
 let latestRefreshDate = null;
 let latestRefreshOffline = false;
 let latestRefreshTicker = null;
+let latestLiveStudies = [];
+let priorityPreviewAudioContext = null;
+let priorityPreviewResetTimer = null;
+let priorityPreviewPlaying = false;
+let priorityAlertSoundBase64PromiseByType = new Map();
+let priorityAlertSoundBufferPromiseByType = new Map();
+let priorityAlertSoundBufferContext = null;
+let currentPriorityFilter = normalizePriorityFilter({
+  enabled: false,
+  autoOpenInNewTab: true,
+  alertSoundEnabled: true,
+  alertSoundType: DEFAULT_PRIORITY_ALERT_SOUND_TYPE,
+  alertSoundVolume: DEFAULT_PRIORITY_ALERT_SOUND_VOLUME,
+  minimumRewardMajor: DEFAULT_PRIORITY_MIN_REWARD,
+  minimumHourlyRewardMajor: DEFAULT_PRIORITY_MIN_HOURLY_REWARD,
+  maximumEstimatedMinutes: DEFAULT_PRIORITY_MAX_ESTIMATED_MINUTES,
+  minimumPlacesAvailable: DEFAULT_PRIORITY_MIN_PLACES,
+  alwaysOpenKeywords: [],
+  ignoreKeywords: []
+});
 
 function formatRetryCountdownMessage() {
   if (!retryDeadlineAt) {
@@ -237,6 +309,312 @@ function normalizeRefreshPolicy(minimumDelaySeconds, averageDelaySeconds, spread
   };
 }
 
+function clampNumber(value, min, max, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizePriorityKeywords(value) {
+  const values = String(value || "").split(",");
+  const unique = [];
+  const seen = new Set();
+  for (const item of values) {
+    const keyword = item.trim().toLowerCase();
+    if (!keyword || seen.has(keyword)) {
+      continue;
+    }
+    seen.add(keyword);
+    unique.push(keyword);
+    if (unique.length >= MAX_PRIORITY_KEYWORDS) {
+      break;
+    }
+  }
+  return unique;
+}
+
+function canonicalPriorityAlertSoundType(value) {
+  const raw = String(value || "").trim();
+  if (PRIORITY_ALERT_SOUND_TYPES.has(raw)) {
+    return raw;
+  }
+  return DEFAULT_PRIORITY_ALERT_SOUND_TYPE;
+}
+
+function normalizePriorityFilter({
+  enabled,
+  autoOpenInNewTab,
+  alertSoundEnabled,
+  alertSoundType,
+  alertSoundVolume,
+  minimumRewardMajor,
+  minimumHourlyRewardMajor,
+  maximumEstimatedMinutes,
+  minimumPlacesAvailable,
+  alwaysOpenKeywords,
+  ignoreKeywords
+}) {
+  const normalizedAlertSoundType = canonicalPriorityAlertSoundType(alertSoundType);
+  return {
+    enabled: Boolean(enabled),
+    auto_open_in_new_tab: autoOpenInNewTab !== false,
+    alert_sound_enabled: alertSoundEnabled !== false,
+    alert_sound_type: normalizedAlertSoundType,
+    alert_sound_volume: clampInt(
+      alertSoundVolume,
+      MIN_PRIORITY_ALERT_SOUND_VOLUME,
+      MAX_PRIORITY_ALERT_SOUND_VOLUME,
+      DEFAULT_PRIORITY_ALERT_SOUND_VOLUME
+    ),
+    alert_sound_duration_ms: DEFAULT_PRIORITY_ALERT_SOUND_DURATION_MS,
+    minimum_reward_major: Math.round(clampNumber(
+      minimumRewardMajor,
+      MIN_PRIORITY_MIN_REWARD,
+      MAX_PRIORITY_MIN_REWARD,
+      DEFAULT_PRIORITY_MIN_REWARD
+    ) * 100) / 100,
+    minimum_hourly_reward_major: Math.round(clampNumber(
+      minimumHourlyRewardMajor,
+      MIN_PRIORITY_MIN_HOURLY_REWARD,
+      MAX_PRIORITY_MIN_HOURLY_REWARD,
+      DEFAULT_PRIORITY_MIN_HOURLY_REWARD
+    ) * 100) / 100,
+    maximum_estimated_minutes: clampInt(
+      maximumEstimatedMinutes,
+      MIN_PRIORITY_MAX_ESTIMATED_MINUTES,
+      MAX_PRIORITY_MAX_ESTIMATED_MINUTES,
+      DEFAULT_PRIORITY_MAX_ESTIMATED_MINUTES
+    ),
+    minimum_places_available: clampInt(
+      minimumPlacesAvailable,
+      MIN_PRIORITY_MIN_PLACES,
+      MAX_PRIORITY_MIN_PLACES,
+      DEFAULT_PRIORITY_MIN_PLACES
+    ),
+    always_open_keywords: Array.isArray(alwaysOpenKeywords)
+      ? alwaysOpenKeywords
+      : normalizePriorityKeywords(alwaysOpenKeywords),
+    ignore_keywords: Array.isArray(ignoreKeywords)
+      ? ignoreKeywords
+      : normalizePriorityKeywords(ignoreKeywords)
+  };
+}
+
+function normalizePriorityFilterFromSettings(s) {
+  return normalizePriorityFilter({
+    enabled: s.priority_filter_enabled === true || s.auto_open_priority_studies === true,
+    autoOpenInNewTab: s.priority_filter_auto_open_in_new_tab !== false,
+    alertSoundEnabled: s.priority_filter_alert_sound_enabled !== false,
+    alertSoundType: s.priority_filter_alert_sound_type,
+    alertSoundVolume: s.priority_filter_alert_sound_volume,
+    minimumRewardMajor: s.priority_filter_minimum_reward,
+    minimumHourlyRewardMajor: s.priority_filter_minimum_hourly_reward,
+    maximumEstimatedMinutes: s.priority_filter_maximum_estimated_minutes,
+    minimumPlacesAvailable: s.priority_filter_minimum_places,
+    alwaysOpenKeywords: s.priority_filter_always_open_keywords,
+    ignoreKeywords: s.priority_filter_ignore_keywords
+  });
+}
+
+function getPriorityPreviewAudioContext() {
+  const AudioContextCtor = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!AudioContextCtor) {
+    return null;
+  }
+  if (priorityPreviewAudioContext) {
+    return priorityPreviewAudioContext;
+  }
+  try {
+    priorityPreviewAudioContext = new AudioContextCtor();
+    return priorityPreviewAudioContext;
+  } catch {
+    return null;
+  }
+}
+
+async function getPriorityAlertSoundBase64(soundType) {
+  const normalized = canonicalPriorityAlertSoundType(soundType);
+  if (!priorityAlertSoundBase64PromiseByType.has(normalized)) {
+    const path = PRIORITY_ALERT_SOUND_TYPE_TO_BASE64_PATH[normalized] || PRIORITY_ALERT_SOUND_TYPE_TO_BASE64_PATH[DEFAULT_PRIORITY_ALERT_SOUND_TYPE];
+    priorityAlertSoundBase64PromiseByType.set(normalized, (async () => {
+      const response = await fetch(chrome.runtime.getURL(path));
+      if (!response.ok) {
+        throw new Error(`Failed to load ${normalized} sound.`);
+      }
+      return (await response.text()).replace(/\s+/g, "");
+    })());
+  }
+  return priorityAlertSoundBase64PromiseByType.get(normalized);
+}
+
+async function getPriorityAlertSoundBuffer(audioContext, soundType) {
+  const normalized = canonicalPriorityAlertSoundType(soundType);
+  if (priorityAlertSoundBufferContext !== audioContext) {
+    priorityAlertSoundBufferContext = audioContext;
+    priorityAlertSoundBufferPromiseByType = new Map();
+  }
+  if (!priorityAlertSoundBufferPromiseByType.has(normalized)) {
+    priorityAlertSoundBufferPromiseByType.set(normalized, (async () => {
+      const base64 = await getPriorityAlertSoundBase64(normalized);
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const arrayBuffer = bytes.buffer.slice(0);
+      const decoded = await new Promise((resolve, reject) => {
+        const maybePromise = audioContext.decodeAudioData(arrayBuffer, resolve, reject);
+        if (maybePromise && typeof maybePromise.then === "function") {
+          maybePromise.then(resolve).catch(reject);
+        }
+      });
+      return decoded;
+    })());
+  }
+  return priorityAlertSoundBufferPromiseByType.get(normalized);
+}
+
+function setPriorityPreviewButtonState(isPlaying) {
+  if (!priorityAlertSoundPreviewButton) {
+    return;
+  }
+  priorityAlertSoundPreviewButton.disabled = isPlaying;
+  priorityAlertSoundPreviewButton.textContent = isPlaying ? "■" : "▶";
+  priorityAlertSoundPreviewButton.title = isPlaying ? "Playing" : "Preview sound";
+}
+
+function queuePriorityPreviewButtonReset(durationMS) {
+  if (priorityPreviewResetTimer) {
+    clearTimeout(priorityPreviewResetTimer);
+  }
+  priorityPreviewResetTimer = setTimeout(() => {
+    priorityPreviewResetTimer = null;
+    priorityPreviewPlaying = false;
+    setPriorityPreviewButtonState(false);
+  }, Math.max(300, durationMS + 180));
+}
+
+async function playPriorityAlertPreviewFromInputs() {
+  if (priorityPreviewPlaying) {
+    return;
+  }
+
+  const filter = getPriorityFilterFromInputs();
+  const audioContext = getPriorityPreviewAudioContext();
+  if (!audioContext) {
+    throw new Error("Audio preview unavailable in this browser.");
+  }
+  if (audioContext.state === "suspended" && typeof audioContext.resume === "function") {
+    await audioContext.resume();
+  }
+
+  const soundType = canonicalPriorityAlertSoundType(filter.alert_sound_type);
+  const soundVolume = clampInt(
+    filter.alert_sound_volume,
+    MIN_PRIORITY_ALERT_SOUND_VOLUME,
+    MAX_PRIORITY_ALERT_SOUND_VOLUME,
+    DEFAULT_PRIORITY_ALERT_SOUND_VOLUME
+  ) / 100;
+  if (soundVolume <= 0) {
+    return;
+  }
+
+  const startTime = audioContext.currentTime + 0.03;
+  const soundBuffer = await getPriorityAlertSoundBuffer(audioContext, soundType);
+  const source = audioContext.createBufferSource();
+  const gainNode = audioContext.createGain();
+  source.buffer = soundBuffer;
+  source.loop = false;
+  gainNode.gain.setValueAtTime(Math.max(0, Math.min(2.5, Math.pow(soundVolume, 0.55) * 2.2)), startTime);
+  source.connect(gainNode);
+  gainNode.connect(audioContext.destination);
+  source.onended = () => {
+    try {
+      source.disconnect();
+      gainNode.disconnect();
+    } catch {
+      // Best effort cleanup.
+    }
+  };
+
+  priorityPreviewPlaying = true;
+  setPriorityPreviewButtonState(true);
+  queuePriorityPreviewButtonReset(Math.ceil((Math.max(0.1, soundBuffer.duration) + 0.12) * 1000));
+  source.start(startTime);
+}
+
+function studyKeywordBlob(study) {
+  const labels = Array.isArray(study && study.study_labels) ? study.study_labels : [];
+  const inferred = Array.isArray(study && study.ai_inferred_study_labels) ? study.ai_inferred_study_labels : [];
+  return [
+    study && study.name ? study.name : "",
+    study && study.description ? study.description : "",
+    ...labels,
+    ...inferred
+  ].join(" ").toLowerCase();
+}
+
+function hasAnyPriorityKeywordMatch(keywordBlob, keywords) {
+  if (!Array.isArray(keywords) || !keywords.length) {
+    return false;
+  }
+  return keywords.some((keyword) => keywordBlob.includes(keyword));
+}
+
+function studyPlacesAvailable(study) {
+  const explicit = Number(study && study.places_available);
+  if (Number.isFinite(explicit)) {
+    return explicit;
+  }
+  const total = Number(study && study.total_available_places);
+  const taken = Number(study && study.places_taken);
+  if (!Number.isFinite(total)) {
+    return NaN;
+  }
+  if (!Number.isFinite(taken)) {
+    return total;
+  }
+  return Math.max(0, total - taken);
+}
+
+function studyMatchesPriorityFilter(study, filter) {
+  if (!filter || filter.enabled !== true) {
+    return false;
+  }
+
+  const keywordBlob = studyKeywordBlob(study);
+  if (hasAnyPriorityKeywordMatch(keywordBlob, filter.ignore_keywords)) {
+    return false;
+  }
+  if (hasAnyPriorityKeywordMatch(keywordBlob, filter.always_open_keywords)) {
+    return true;
+  }
+
+  const reward = moneyMajorValue(study && study.reward);
+  if (!Number.isFinite(reward) || reward < Number(filter.minimum_reward_major)) {
+    return false;
+  }
+
+  const hourly = moneyMajorValue(study && study.average_reward_per_hour);
+  if (!Number.isFinite(hourly) || hourly < Number(filter.minimum_hourly_reward_major)) {
+    return false;
+  }
+
+  const estimatedMinutes = Number(study && study.estimated_completion_time);
+  if (!Number.isFinite(estimatedMinutes) || estimatedMinutes > Number(filter.maximum_estimated_minutes)) {
+    return false;
+  }
+
+  const places = studyPlacesAvailable(study);
+  if (!Number.isFinite(places) || places < Number(filter.minimum_places_available)) {
+    return false;
+  }
+
+  return true;
+}
+
 function buildRefreshPlan(policy) {
   const cycle = policy.cycle_seconds;
   const minimum = policy.minimum_delay_seconds;
@@ -366,11 +744,27 @@ function isServiceUnavailableError(error) {
   return isNetworkFailureMessage(message) || message.includes(SERVICE_OFFLINE_MESSAGE);
 }
 
+function isServiceConnectingMessage(message) {
+  return String(message || "").trim() === SERVICE_CONNECTING_MESSAGE;
+}
+
+function normalizeServiceHealthMessage(message) {
+  const text = String(message || "").trim();
+  if (!text) {
+    return "";
+  }
+  return text;
+}
+
+function shouldShowServiceConnectingMessage(state) {
+  return !(state && state.service_ws_connected === true);
+}
+
 function toUserErrorMessage(error) {
   if (isServiceUnavailableError(error)) {
     return SERVICE_OFFLINE_MESSAGE;
   }
-  return errorMessageFromUnknown(error) || "Unexpected error.";
+  return normalizeServiceHealthMessage(errorMessageFromUnknown(error)) || "Unexpected error.";
 }
 
 function parseDate(value) {
@@ -434,6 +828,11 @@ async function getSettings() {
 
 async function setAutoOpen(enabled) {
   await sendRuntimeMessage("setAutoOpen", { enabled });
+}
+
+async function setPriorityFilter(filter) {
+  const response = await sendRuntimeMessage("setPriorityFilter", filter);
+  return response.settings || {};
 }
 
 async function setRefreshDelays(minimumDelaySeconds, averageDelaySeconds, spreadSeconds) {
@@ -677,6 +1076,7 @@ function renderLiveStudies(studies) {
   });
 
   const html = sortedStudies.map((study) => {
+    const isPriority = studyMatchesPriorityFilter(study, currentPriorityFilter);
     const name = escapeHtml(study.name || "(unnamed study)");
     const reward = escapeHtml(formatMoneyFromMinorUnits(study.reward));
     const perHourMoney = study.average_reward_per_hour;
@@ -693,7 +1093,7 @@ function renderLiveStudies(studies) {
 
     const url = studyUrlFromId(study.id);
     const cardInner = `
-      <div class="event live">
+      <div class="event live${isPriority ? " priority" : ""}">
         <div class="event-top">
           <div class="event-title">${name}</div>
           <div class="event-time">Live</div>
@@ -703,6 +1103,7 @@ function renderLiveStudies(studies) {
           <span class="badge${perHourClass}">${perHour}/hr</span>
           <span class="badge">${eta}</span>
           <span class="badge place${placesClass}">${placesLabel}</span>
+          ${isPriority ? '<span class="badge priority">Priority</span>' : ""}
         </div>
       </div>
     `;
@@ -715,6 +1116,17 @@ function renderLiveStudies(studies) {
   }).join("");
 
   liveStudiesEl.innerHTML = html;
+}
+
+function rerenderLiveStudiesFromCache() {
+  if (!Array.isArray(latestLiveStudies) || !latestLiveStudies.length) {
+    return;
+  }
+  // Avoid replacing status placeholders like "Waiting for login."
+  if (!liveStudiesEl.querySelector(".event.live")) {
+    return;
+  }
+  renderLiveStudies(latestLiveStudies);
 }
 
 function renderEvents(events) {
@@ -856,26 +1268,29 @@ function activateTab(tabName) {
 
 function deriveErrorMessage(state, sourceError) {
   if (sourceError) {
-    return sourceError;
+    return normalizeServiceHealthMessage(sourceError);
   }
   if (!state) {
     return "";
   }
   if (state.token_ok === false) {
-    return state.token_reason || "Token sync error.";
+    return normalizeServiceHealthMessage(state.token_reason || "Token sync error.");
   }
   if (state.studies_headers_ok === false) {
-    return state.studies_headers_reason || "Studies header capture error.";
+    return normalizeServiceHealthMessage(state.studies_headers_reason || "Studies header capture error.");
   }
   if (state.studies_refresh_ok === false) {
-    return state.studies_refresh_reason || "Studies refresh sync error.";
+    return normalizeServiceHealthMessage(state.studies_refresh_reason || "Studies refresh sync error.");
   }
   if (
     state.studies_response_capture_supported === true &&
     state.studies_response_capture_ok === false &&
     state.studies_response_capture_reason
   ) {
-    return state.studies_response_capture_reason;
+    if (isServiceConnectingMessage(state.studies_response_capture_reason) && !shouldShowServiceConnectingMessage(state)) {
+      return "";
+    }
+    return normalizeServiceHealthMessage(state.studies_response_capture_reason);
   }
   return "";
 }
@@ -986,16 +1401,19 @@ function formatDebugIssue(state) {
     return "waiting for login";
   }
   if (state.token_ok === false) {
-    return compactText(state.token_reason || "token sync failed");
+    return compactText(normalizeServiceHealthMessage(state.token_reason || "token sync failed"));
   }
   if (state.studies_headers_ok === false) {
-    return compactText(state.studies_headers_reason || "headers capture failed");
+    return compactText(normalizeServiceHealthMessage(state.studies_headers_reason || "headers capture failed"));
   }
   if (state.studies_refresh_ok === false) {
-    return compactText(state.studies_refresh_reason || "refresh sync failed");
+    return compactText(normalizeServiceHealthMessage(state.studies_refresh_reason || "refresh sync failed"));
   }
   if (state.studies_response_capture_ok === false) {
-    return compactText(state.studies_response_capture_reason || "response capture failed");
+    if (isServiceConnectingMessage(state.studies_response_capture_reason) && !shouldShowServiceConnectingMessage(state)) {
+      return "none";
+    }
+    return compactText(normalizeServiceHealthMessage(state.studies_response_capture_reason || "response capture failed"));
   }
   return "none";
 }
@@ -1079,6 +1497,8 @@ async function refreshSettings() {
   try {
     const settings = await getSettings();
     autoOpenToggle.checked = settings.auto_open_prolific_tab !== false;
+    const priorityFilter = normalizePriorityFilterFromSettings(settings);
+    applyPriorityFilterToControls(priorityFilter);
     const refreshPolicy = normalizeRefreshPolicy(
       settings.studies_refresh_min_delay_seconds,
       settings.studies_refresh_average_delay_seconds,
@@ -1157,8 +1577,10 @@ async function refreshView() {
         renderAuthRequiredPanels();
       } else {
         if (studiesSection.ok) {
-          renderLiveStudies(studiesSection.data);
+          latestLiveStudies = Array.isArray(studiesSection.data) ? studiesSection.data : [];
+          renderLiveStudies(latestLiveStudies);
         } else {
+          latestLiveStudies = [];
           liveStudiesEl.innerHTML = `<div class="empty-events">${escapeHtml(toUserErrorMessage(studiesSection.error))}</div>`;
         }
 
@@ -1190,15 +1612,6 @@ async function refreshView() {
       }
     }
 
-    if (serviceOffline) {
-      renderOfflineLatestRefresh();
-    } else if (authRequired) {
-      renderSignedOutLatestRefresh();
-    } else {
-      renderLatestRefresh(refreshState);
-    }
-    renderDebugInfo(extensionState, refreshState);
-
     let healthMessage = deriveErrorMessage(extensionState, firstErrorMessage);
     if (authRequired) {
       healthMessage = AUTH_REQUIRED_MESSAGE;
@@ -1206,6 +1619,15 @@ async function refreshView() {
     if (!serviceOffline && serviceSuccessCount > 0 && isServiceUnavailableError(healthMessage)) {
       healthMessage = "";
     }
+
+    if (serviceOffline || isServiceConnectingMessage(healthMessage)) {
+      renderOfflineLatestRefresh();
+    } else if (authRequired) {
+      renderSignedOutLatestRefresh();
+    } else {
+      renderLatestRefresh(refreshState);
+    }
+    renderDebugInfo(extensionState, refreshState);
     setHealthError(healthMessage);
   } finally {
     isRefreshingView = false;
@@ -1221,6 +1643,74 @@ function getRefreshPolicyFromInputs() {
     refreshAverageDelayInput ? refreshAverageDelayInput.value : undefined,
     refreshSpreadInput ? refreshSpreadInput.value : undefined
   );
+}
+
+function getPriorityFilterFromInputs() {
+  return normalizePriorityFilter({
+    enabled: priorityFilterEnabledToggle ? priorityFilterEnabledToggle.checked : false,
+    autoOpenInNewTab: priorityAutoOpenInNewTabToggle ? priorityAutoOpenInNewTabToggle.checked : true,
+    alertSoundEnabled: priorityAlertSoundToggle ? priorityAlertSoundToggle.checked : true,
+    alertSoundType: priorityAlertSoundTypeSelect ? priorityAlertSoundTypeSelect.value : currentPriorityFilter.alert_sound_type,
+    alertSoundVolume: priorityAlertSoundVolumeInput ? priorityAlertSoundVolumeInput.value : currentPriorityFilter.alert_sound_volume,
+    minimumRewardMajor: priorityMinRewardInput ? priorityMinRewardInput.value : undefined,
+    minimumHourlyRewardMajor: priorityMinHourlyInput ? priorityMinHourlyInput.value : undefined,
+    maximumEstimatedMinutes: priorityMaxEtaInput ? priorityMaxEtaInput.value : undefined,
+    minimumPlacesAvailable: priorityMinPlacesInput ? priorityMinPlacesInput.value : undefined,
+    alwaysOpenKeywords: priorityAlwaysKeywordsInput ? priorityAlwaysKeywordsInput.value : "",
+    ignoreKeywords: priorityIgnoreKeywordsInput ? priorityIgnoreKeywordsInput.value : ""
+  });
+}
+
+async function persistPriorityFilterFromInputs() {
+  const filter = getPriorityFilterFromInputs();
+  applyPriorityFilterToControls(filter);
+  const saved = await setPriorityFilter(filter);
+  const normalized = normalizePriorityFilterFromSettings(saved);
+  applyPriorityFilterToControls(normalized);
+}
+
+function applyPriorityFilterToControls(filter) {
+  if (!filter || typeof filter !== "object") {
+    return;
+  }
+  currentPriorityFilter = filter;
+  rerenderLiveStudiesFromCache();
+  if (priorityFilterEnabledToggle) {
+    priorityFilterEnabledToggle.checked = filter.enabled === true;
+  }
+  if (priorityAutoOpenInNewTabToggle) {
+    priorityAutoOpenInNewTabToggle.checked = filter.auto_open_in_new_tab !== false;
+  }
+  if (priorityAlertSoundToggle) {
+    priorityAlertSoundToggle.checked = filter.alert_sound_enabled !== false;
+  }
+  if (priorityAlertSoundTypeSelect) {
+    priorityAlertSoundTypeSelect.value = filter.alert_sound_type;
+  }
+  if (priorityAlertSoundVolumeInput) {
+    priorityAlertSoundVolumeInput.value = String(filter.alert_sound_volume);
+  }
+  if (priorityMinRewardInput) {
+    priorityMinRewardInput.value = String(filter.minimum_reward_major);
+  }
+  if (priorityMinHourlyInput) {
+    priorityMinHourlyInput.value = String(filter.minimum_hourly_reward_major);
+  }
+  if (priorityMaxEtaInput) {
+    priorityMaxEtaInput.value = String(filter.maximum_estimated_minutes);
+  }
+  if (priorityMinPlacesInput) {
+    priorityMinPlacesInput.value = String(filter.minimum_places_available);
+  }
+  if (priorityAlwaysKeywordsInput) {
+    priorityAlwaysKeywordsInput.value = (Array.isArray(filter.always_open_keywords) ? filter.always_open_keywords : []).join(", ");
+  }
+  if (priorityIgnoreKeywordsInput) {
+    priorityIgnoreKeywordsInput.value = (Array.isArray(filter.ignore_keywords) ? filter.ignore_keywords : []).join(", ");
+  }
+  if (priorityAlertSoundConfig) {
+    priorityAlertSoundConfig.classList.toggle("active", Boolean(filter && filter.alert_sound_enabled !== false));
+  }
 }
 
 function applyRefreshPolicyToControls(refreshPolicy) {
@@ -1259,6 +1749,30 @@ autoOpenToggle.addEventListener("change", async (event) => {
     await refreshSettings();
   }
 });
+
+for (const toggle of [priorityFilterEnabledToggle, priorityAutoOpenInNewTabToggle, priorityAlertSoundToggle]) {
+  if (toggle) {
+    toggle.addEventListener("change", async () => {
+      await runWithHealthError(() => persistPriorityFilterFromInputs());
+    });
+  }
+}
+
+if (priorityAlertSoundPreviewButton) {
+  priorityAlertSoundPreviewButton.addEventListener("click", async () => {
+    await runWithHealthError(async () => {
+      await playPriorityAlertPreviewFromInputs();
+    });
+  });
+}
+
+if (priorityFilterSaveButton) {
+  priorityFilterSaveButton.addEventListener("click", async () => {
+    await runWithHealthError(async () => {
+      await persistPriorityFilterFromInputs();
+    });
+  });
+}
 
 if (refreshMinDelayInput && refreshAverageDelayInput && refreshSpreadInput) {
   const updatePreview = () => {

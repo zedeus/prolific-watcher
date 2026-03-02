@@ -188,6 +188,12 @@
       background: var(--surface);
     }
 
+    .event.live.priority {
+      border-left-color: #0f766e;
+      background: #dcfce7;
+      box-shadow: inset 0 0 0 1px rgba(15, 118, 110, 0.24);
+    }
+
     .event.submission-approved,
     .event.submission-complete {
       border-left-color: var(--good);
@@ -232,6 +238,12 @@
       transform: translateY(-1px);
       border-color: #b6c0cf;
       background: #f9fafb;
+    }
+
+    .event-link:hover .event.priority {
+      border-color: #0f766e;
+      background: #bbf7d0;
+      box-shadow: inset 0 0 0 1px rgba(15, 118, 110, 0.32);
     }
 
     .event-link:focus-visible .event {
@@ -306,6 +318,12 @@
       color: #9a4f08;
     }
 
+    .badge.priority {
+      border-color: #2dd4bf;
+      background: #ecfeff;
+      color: #0f766e;
+    }
+
     .badge.rate-high {
       border-color: #8ad3aa;
       background: #e7f8ef;
@@ -361,6 +379,145 @@
       font-size: 10px;
       color: #667085;
       margin-top: 2px;
+    }
+
+    .setting-header-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 2px;
+    }
+
+    .priority-config-grid {
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .priority-note {
+      margin-top: 8px;
+      font-size: 10px;
+      color: #667085;
+      line-height: 1.35;
+    }
+
+    .priority-field {
+      display: grid;
+      grid-template-columns: 156px 1fr;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .priority-field.toggle {
+      margin-top: 8px;
+    }
+
+    .priority-field.toggle .switch-toggle {
+      justify-self: start;
+    }
+
+    .priority-alert-config {
+      margin-top: 8px;
+      padding: 8px;
+      border: 1px solid #d8dee8;
+      border-radius: 2px;
+      background: #fbfcfd;
+      display: none;
+    }
+
+    .priority-alert-config.active {
+      display: block;
+    }
+
+    .priority-label-inline {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .priority-alert-inline-play {
+      width: 20px;
+      height: 20px;
+      border: 1px solid #c8d0dd;
+      border-radius: 2px;
+      background: #fff;
+      color: #344054;
+      cursor: pointer;
+      font-size: 10px;
+      line-height: 1;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+    }
+
+    .priority-alert-inline-play:hover {
+      border-color: #98a7bb;
+      color: #1d2939;
+      background: #f8fafc;
+    }
+
+    .priority-alert-inline-play:disabled {
+      cursor: default;
+      color: #98a2b3;
+      border-color: #d8dee8;
+      background: #f2f4f7;
+    }
+
+    .priority-field label {
+      font-size: 10px;
+      color: #667085;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+    }
+
+    .priority-field input[type="number"],
+    .priority-field input[type="range"],
+    .priority-field input[type="text"],
+    .priority-field select {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #c8d0dd;
+      border-radius: 2px;
+      padding: 6px 7px;
+      font-size: 11px;
+      color: #101828;
+      background: #fff;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+    }
+
+    .priority-field input[type="text"] {
+      text-transform: lowercase;
+    }
+
+    .priority-save-bar {
+      margin-top: 8px;
+      width: 100%;
+      border: 1px solid #c8d0dd;
+      background: transparent;
+      color: #475467;
+      border-radius: 2px;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-weight: 800;
+      line-height: 1;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-family: "IBM Plex Mono", "Consolas", monospace;
+      height: 30px;
+    }
+
+    .priority-save-bar:hover {
+      border-color: #98a7bb;
+      color: #1d2939;
+      background: #f8fafc;
     }
 
     .refresh-config-grid {
@@ -739,6 +896,93 @@
               <div class="setting-sub">Keeps a background Prolific tab alive when none are open.</div>
             </div>
             <input id="autoOpenToggle" class="switch-toggle" type="checkbox" aria-label="Auto-open Prolific tab">
+          </div>
+
+          <div class="setting-card stack">
+            <div class="setting-header-toggle">
+              <div class="setting-title">Priority filter</div>
+              <input
+                id="priorityFilterEnabledToggle"
+                class="switch-toggle"
+                type="checkbox"
+                aria-label="Priority filter"
+              >
+            </div>
+            <div class="setting-sub">Highlight and alert when newly available studies match these rules.</div>
+            <div class="priority-config-grid">
+              <div class="priority-field">
+                <label for="priorityMinRewardInput">Min reward</label>
+                <input id="priorityMinRewardInput" type="number" min="0" max="100" step="0.1">
+              </div>
+              <div class="priority-field">
+                <label for="priorityMinHourlyInput">Min reward/hour</label>
+                <input id="priorityMinHourlyInput" type="number" min="0" max="100" step="0.5">
+              </div>
+              <div class="priority-field">
+                <label for="priorityMaxEtaInput">Max ETA (minutes)</label>
+                <input id="priorityMaxEtaInput" type="number" min="1" max="240" step="1">
+              </div>
+              <div class="priority-field">
+                <label for="priorityMinPlacesInput">Min places left</label>
+                <input id="priorityMinPlacesInput" type="number" min="1" max="1000" step="1">
+              </div>
+              <div class="priority-field">
+                <label for="priorityAlwaysKeywordsInput">Always-open keywords</label>
+                <input id="priorityAlwaysKeywordsInput" type="text" spellcheck="false" placeholder="survey, ai, mobile">
+              </div>
+              <div class="priority-field">
+                <label for="priorityIgnoreKeywordsInput">Ignore keywords</label>
+                <input id="priorityIgnoreKeywordsInput" type="text" spellcheck="false" placeholder="screened, webcam">
+              </div>
+            </div>
+            <div class="priority-note">Ignore keywords win first. Otherwise, always-open keywords force open. If neither keyword list matches, numeric filters decide.</div>
+            <div class="priority-field toggle">
+              <label for="priorityAutoOpenInNewTabToggle">Auto-open in new tab</label>
+              <input
+                id="priorityAutoOpenInNewTabToggle"
+                class="switch-toggle"
+                type="checkbox"
+                aria-label="Auto-open in new tab"
+              >
+            </div>
+            <div class="priority-field toggle">
+              <label for="priorityAlertSoundToggle">Alert sound</label>
+              <input
+                id="priorityAlertSoundToggle"
+                class="switch-toggle"
+                type="checkbox"
+                aria-label="Alert sound"
+              >
+            </div>
+            <div id="priorityAlertSoundConfig" class="priority-alert-config">
+              <div class="priority-field">
+                <div class="priority-label-inline">
+                  <label for="priorityAlertSoundTypeSelect">Sound</label>
+                  <button
+                    id="priorityAlertSoundPreviewButton"
+                    class="priority-alert-inline-play"
+                    type="button"
+                    aria-label="Preview sound"
+                    title="Preview sound"
+                  >▶</button>
+                </div>
+                <select id="priorityAlertSoundTypeSelect">
+                  <option value="pay">Pay</option>
+                  <option value="metal_gear">Metal Gear</option>
+                  <option value="twitch">Twitch</option>
+                  <option value="chime">Chime</option>
+                  <option value="money">Money</option>
+                  <option value="samsung">Samsung</option>
+                  <option value="lbp">LBP</option>
+                  <option value="taco">Taco</option>
+                </select>
+              </div>
+              <div class="priority-field">
+                <label for="priorityAlertSoundVolumeInput">Volume</label>
+                <input id="priorityAlertSoundVolumeInput" type="range" min="0" max="100" step="1">
+              </div>
+            </div>
+            <button id="priorityFilterSaveButton" class="priority-save-bar" type="button">Save Priority Filter</button>
           </div>
 
           <div class="setting-card stack">
