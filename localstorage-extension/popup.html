@@ -496,9 +496,18 @@
       text-transform: lowercase;
     }
 
-    .priority-save-bar {
+    .setting-actions {
       margin-top: 8px;
-      width: 100%;
+      display: none;
+      gap: 8px;
+    }
+
+    .setting-actions.visible {
+      display: flex;
+    }
+
+    .setting-action {
+      flex: 1 1 0;
       border: 1px solid #c8d0dd;
       background: transparent;
       color: #475467;
@@ -514,10 +523,22 @@
       height: 30px;
     }
 
-    .priority-save-bar:hover {
+    .setting-action:hover {
       border-color: #98a7bb;
       color: #1d2939;
       background: #f8fafc;
+    }
+
+    .setting-action.revert {
+      color: #7a3038;
+      border-color: #e3b8be;
+      background: #fff8f8;
+    }
+
+    .setting-action.revert:hover {
+      border-color: #cb8d95;
+      color: #651f27;
+      background: #fff1f2;
     }
 
     .refresh-config-grid {
@@ -558,30 +579,6 @@
       height: 24px;
       margin: 0;
       accent-color: #64748b;
-    }
-
-    .refresh-save-bar {
-      margin-top: 8px;
-      width: 100%;
-      border: 1px solid #c8d0dd;
-      background: transparent;
-      color: #475467;
-      border-radius: 2px;
-      font-size: 10px;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      font-weight: 800;
-      line-height: 1;
-      padding: 8px 10px;
-      cursor: pointer;
-      font-family: "IBM Plex Mono", "Consolas", monospace;
-      height: 30px;
-    }
-
-    .refresh-save-bar:hover {
-      border-color: #98a7bb;
-      color: #1d2939;
-      background: #f8fafc;
     }
 
     .refresh-plan-summary {
@@ -982,11 +979,10 @@
                 <input id="priorityAlertSoundVolumeInput" type="range" min="0" max="100" step="1">
               </div>
             </div>
-            <button id="priorityFilterSaveButton" class="priority-save-bar" type="button">Save Priority Filter</button>
           </div>
 
           <div class="setting-card stack">
-            <div class="setting-title">Service refresh cadence</div>
+            <div class="setting-title">Studies refresh rate</div>
             <div class="setting-sub">Plan delayed backend refreshes inside each 2-minute Prolific auto-refresh cycle.</div>
             <div class="refresh-config-grid">
               <div class="refresh-field">
@@ -1007,7 +1003,10 @@
             </div>
             <div id="refreshPlanSummary" class="refresh-plan-summary"></div>
             <div id="refreshPlanTrack" class="refresh-plan-track"></div>
-            <button id="refreshCadenceSaveButton" class="refresh-save-bar" type="button">Save Refresh Cadence</button>
+            <div id="refreshCadenceActions" class="setting-actions">
+              <button id="refreshCadenceSaveButton" class="setting-action" type="button">Save</button>
+              <button id="refreshCadenceRevertButton" class="setting-action revert" type="button">Revert</button>
+            </div>
           </div>
 
           <details class="debug-details">

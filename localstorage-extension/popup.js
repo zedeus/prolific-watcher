@@ -12,7 +12,6 @@ const priorityMaxEtaInput = document.getElementById("priorityMaxEtaInput");
 const priorityMinPlacesInput = document.getElementById("priorityMinPlacesInput");
 const priorityAlwaysKeywordsInput = document.getElementById("priorityAlwaysKeywordsInput");
 const priorityIgnoreKeywordsInput = document.getElementById("priorityIgnoreKeywordsInput");
-const priorityFilterSaveButton = document.getElementById("priorityFilterSaveButton");
 const syncDotEl = document.getElementById("syncDot");
 const refreshPrefixEl = document.getElementById("refreshPrefix");
 const latestRefreshEl = document.getElementById("latestRefresh");
@@ -35,7 +34,9 @@ const refreshSpreadInput = document.getElementById("refreshSpreadInput");
 const refreshMinDelayValueEl = document.getElementById("refreshMinDelayValue");
 const refreshAverageDelayValueEl = document.getElementById("refreshAverageDelayValue");
 const refreshSpreadValueEl = document.getElementById("refreshSpreadValue");
+const refreshCadenceActionsEl = document.getElementById("refreshCadenceActions");
 const refreshCadenceSaveButton = document.getElementById("refreshCadenceSaveButton");
+const refreshCadenceRevertButton = document.getElementById("refreshCadenceRevertButton");
 const refreshPlanSummaryEl = document.getElementById("refreshPlanSummary");
 const refreshPlanTrackEl = document.getElementById("refreshPlanTrack");
 
@@ -46,6 +47,7 @@ const AUTH_REQUIRED_PANEL_MESSAGE = "Waiting for login.";
 const RETRY_INTERVAL_MS = 5000;
 const DEFAULT_REFRESH_INTERVAL_MS = 60000;
 const REACTIVE_REFRESH_DEBOUNCE_MS = 150;
+const PRIORITY_FILTER_PERSIST_DEBOUNCE_MS = 250;
 const REFRESH_CYCLE_SECONDS = 120;
 const DEFAULT_REFRESH_MIN_DELAY_SECONDS = 20;
 const DEFAULT_REFRESH_AVERAGE_DELAY_SECONDS = 30;
@@ -140,6 +142,9 @@ let priorityPreviewPlaying = false;
 let priorityAlertSoundBase64PromiseByType = new Map();
 let priorityAlertSoundBufferPromiseByType = new Map();
 let priorityAlertSoundBufferContext = null;
+let priorityFilterPersistTimer = null;
+let priorityFilterPersistPending = false;
+let priorityFilterPersistInFlight = false;
 let currentPriorityFilter = normalizePriorityFilter({
   enabled: false,
   autoOpenInNewTab: true,
@@ -153,6 +158,11 @@ let currentPriorityFilter = normalizePriorityFilter({
   alwaysOpenKeywords: [],
   ignoreKeywords: []
 });
+let savedRefreshPolicy = normalizeRefreshPolicy(
+  DEFAULT_REFRESH_MIN_DELAY_SECONDS,
+  DEFAULT_REFRESH_AVERAGE_DELAY_SECONDS,
+  DEFAULT_REFRESH_SPREAD_SECONDS
+);
 
 function formatRetryCountdownMessage() {
   if (!retryDeadlineAt) {
@@ -1504,6 +1514,7 @@ async function refreshSettings() {
       settings.studies_refresh_average_delay_seconds,
       settings.studies_refresh_spread_seconds
     );
+    savedRefreshPolicy = refreshPolicy;
     applyRefreshPolicyToControls(refreshPolicy);
   } catch (error) {
     setHealthError(error.message);
@@ -1645,6 +1656,24 @@ function getRefreshPolicyFromInputs() {
   );
 }
 
+function areRefreshPoliciesEquivalent(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+  return left.minimum_delay_seconds === right.minimum_delay_seconds &&
+    left.average_delay_seconds === right.average_delay_seconds &&
+    left.spread_seconds === right.spread_seconds;
+}
+
+function updateRefreshCadenceActions() {
+  if (!refreshCadenceActionsEl) {
+    return;
+  }
+  const current = getRefreshPolicyFromInputs();
+  const hasUnsavedChanges = !areRefreshPoliciesEquivalent(current, savedRefreshPolicy);
+  refreshCadenceActionsEl.classList.toggle("visible", hasUnsavedChanges);
+}
+
 function getPriorityFilterFromInputs() {
   return normalizePriorityFilter({
     enabled: priorityFilterEnabledToggle ? priorityFilterEnabledToggle.checked : false,
@@ -1659,6 +1688,32 @@ function getPriorityFilterFromInputs() {
     alwaysOpenKeywords: priorityAlwaysKeywordsInput ? priorityAlwaysKeywordsInput.value : "",
     ignoreKeywords: priorityIgnoreKeywordsInput ? priorityIgnoreKeywordsInput.value : ""
   });
+}
+
+async function persistPriorityFilterIfNeeded() {
+  if (priorityFilterPersistInFlight) {
+    return;
+  }
+  priorityFilterPersistInFlight = true;
+  try {
+    while (priorityFilterPersistPending) {
+      priorityFilterPersistPending = false;
+      await runWithHealthError(() => persistPriorityFilterFromInputs());
+    }
+  } finally {
+    priorityFilterPersistInFlight = false;
+  }
+}
+
+function schedulePriorityFilterPersist() {
+  priorityFilterPersistPending = true;
+  if (priorityFilterPersistTimer) {
+    clearTimeout(priorityFilterPersistTimer);
+  }
+  priorityFilterPersistTimer = setTimeout(() => {
+    priorityFilterPersistTimer = null;
+    void persistPriorityFilterIfNeeded();
+  }, PRIORITY_FILTER_PERSIST_DEBOUNCE_MS);
 }
 
 async function persistPriorityFilterFromInputs() {
@@ -1738,6 +1793,7 @@ function applyRefreshPolicyToControls(refreshPolicy) {
     refreshSpreadValueEl.textContent = `${refreshPolicy.spread_seconds}s`;
   }
   renderRefreshPlanPreview(refreshPolicy);
+  updateRefreshCadenceActions();
 }
 
 autoOpenToggle.addEventListener("change", async (event) => {
@@ -1750,26 +1806,32 @@ autoOpenToggle.addEventListener("change", async (event) => {
   }
 });
 
-for (const toggle of [priorityFilterEnabledToggle, priorityAutoOpenInNewTabToggle, priorityAlertSoundToggle]) {
-  if (toggle) {
-    toggle.addEventListener("change", async () => {
-      await runWithHealthError(() => persistPriorityFilterFromInputs());
-    });
+const priorityFilterControls = [
+  priorityFilterEnabledToggle,
+  priorityAutoOpenInNewTabToggle,
+  priorityAlertSoundToggle,
+  priorityAlertSoundTypeSelect,
+  priorityAlertSoundVolumeInput,
+  priorityMinRewardInput,
+  priorityMinHourlyInput,
+  priorityMaxEtaInput,
+  priorityMinPlacesInput,
+  priorityAlwaysKeywordsInput,
+  priorityIgnoreKeywordsInput
+];
+
+for (const control of priorityFilterControls) {
+  if (!control) {
+    continue;
   }
+  control.addEventListener("input", schedulePriorityFilterPersist);
+  control.addEventListener("change", schedulePriorityFilterPersist);
 }
 
 if (priorityAlertSoundPreviewButton) {
   priorityAlertSoundPreviewButton.addEventListener("click", async () => {
     await runWithHealthError(async () => {
       await playPriorityAlertPreviewFromInputs();
-    });
-  });
-}
-
-if (priorityFilterSaveButton) {
-  priorityFilterSaveButton.addEventListener("click", async () => {
-    await runWithHealthError(async () => {
-      await persistPriorityFilterFromInputs();
     });
   });
 }
@@ -1801,8 +1863,15 @@ if (refreshCadenceSaveButton) {
         saved.studies_refresh_average_delay_seconds,
         saved.studies_refresh_spread_seconds
       );
+      savedRefreshPolicy = normalized;
       applyRefreshPolicyToControls(normalized);
     });
+  });
+}
+
+if (refreshCadenceRevertButton) {
+  refreshCadenceRevertButton.addEventListener("click", () => {
+    applyRefreshPolicyToControls(savedRefreshPolicy);
   });
 }
 
