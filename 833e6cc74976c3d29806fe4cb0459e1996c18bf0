@@ -1,0 +1,24 @@
+auto_refresh.go
+  d8bfdfa347fe8767 407-412
+models.go
+  d8bfdfa347fe8767 43-44
+  cb94dc07f64f50a4 39-42,45
+ws.go
+  d8bfdfa347fe8767 153,158-164,167
+localstorage-extension/background.js
+  7e84caf5772ca23f 960,1544-1545
+ingest_processors.go
+  d8bfdfa347fe8767 90,149-154
+localstorage-extension/popup.js
+  d8bfdfa347fe8767 751-758,767,1271,1277,1280,1283,1293,1404,1407,1410,1416,1622
+  7e84caf5772ca23f 143-155,346,358,405-420,440,595,600,1500,1649-1661,1668,1688,1691,1706,1709,1711-1713,1753-1755,1758
+handlers.go
+  cb94dc07f64f50a4 605,619-620
+  d8bfdfa347fe8767 529,533-534,536,559-566,587-604,606-618,728-733
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.7",
+  "base_commit_sha": "833e6cc74976c3d29806fe4cb0459e1996c18bf0",
+  "prompts": {}
+}
