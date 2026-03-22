@@ -1,12 +1,12 @@
 # Credentials
 .prolific-auth
-prolific_watcher.db
-prolific_watcher.db-shm
-prolific_watcher.db-wal
+prolific_pulse.db
+prolific_pulse.db-shm
+prolific_pulse.db-wal
 
 # Go build artifacts
-prolific-watcher
-prolific_watcher
+prolific-pulse
+prolific_pulse
 *.exe
 *.exe~
 *.dll
@@ -46,3 +46,6 @@ tests/profiles/
 
 # WebdriverIO / Node.js test artifacts
 tests-wdio/node_modules/
+
+# Third-party extensions
+prolific-assistant/
