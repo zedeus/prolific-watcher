@@ -2,7 +2,6 @@ package main
 
 import (
 	"net/http"
-	"strings"
 )
 
 func normalizeURLOrAPIError(raw string, normalize func(string) (string, bool), message string) (string, error) {
@@ -18,60 +17,6 @@ func requireNonEmptyJSONBody(body []byte) error {
 		return nil
 	}
 	return badRequest("body cannot be empty", nil)
-}
-
-func (s *Service) processReceiveToken(payload StoredToken) (map[string]any, error) {
-	if payload.AccessToken == "" {
-		return nil, badRequest("missing access_token", nil)
-	}
-	if err := s.tokenStore.Set(payload); err != nil {
-		return nil, internalServerError("failed to persist token", err)
-	}
-
-	logInfo("token.received", "origin", payload.Origin, "key", payload.Key, "browser_info", payload.BrowserInfo)
-	return map[string]any{"success": true, "message": "token stored"}, nil
-}
-
-func (s *Service) processClearToken(payload clearTokenRequest) (map[string]any, error) {
-	if err := s.tokenStore.Clear(); err != nil {
-		return nil, internalServerError("failed to clear token", err)
-	}
-
-	reason := strings.TrimSpace(payload.Reason)
-	if reason == "" {
-		reason = "extension.clear_token"
-	}
-	s.cancelDelayedServiceRefresh(reason)
-
-	logInfo("token.cleared", "reason", reason)
-	return map[string]any{"success": true, "reason": reason}, nil
-}
-
-func (s *Service) processReceiveStudiesHeaders(payload StudiesHeadersCapture) (map[string]any, error) {
-	normalizedURL, err := normalizeURLOrAPIError(
-		payload.URL,
-		normalizeStudiesCollectionURL,
-		"url must target internal studies endpoint",
-	)
-	if err != nil {
-		return nil, err
-	}
-	payload.URL = normalizedURL
-
-	if len(payload.Headers) == 0 {
-		return nil, badRequest("headers cannot be empty", nil)
-	}
-	if len(payload.Headers) > 250 {
-		return nil, badRequest("too many headers in payload", nil)
-	}
-
-	if err := s.headersStore.Set(payload); err != nil {
-		logWarn("studies.headers.persist_failed", "error", err)
-		return nil, internalServerError("failed to persist studies headers", err)
-	}
-
-	logInfo("studies.headers.received", "url", payload.URL, "method", payload.Method, "count", len(payload.Headers))
-	return map[string]any{"success": true, "message": "studies headers stored", "count": len(payload.Headers)}, nil
 }
 
 func (s *Service) processReceiveStudiesRefresh(payload StudiesRefreshUpdate) (map[string]any, error) {
@@ -93,41 +38,7 @@ func (s *Service) processReceiveStudiesRefresh(payload StudiesRefreshUpdate) (ma
 	}
 
 	logInfo("studies.refresh.received", "source", payload.Source, "status_code", payload.StatusCode, "url", payload.URL, "observed_at", payload.ObservedAt)
-	if shouldScheduleDelayedRefresh(payload.Source, payload.StatusCode) {
-		authReady, err := s.canScheduleDelayedRefresh()
-		if err != nil {
-			logWarn("refresh.delayed.schedule_skipped", "source", payload.Source, "reason", "token_lookup_failed", "error", err)
-		} else if !authReady {
-			logInfo("refresh.delayed.schedule_skipped", "source", payload.Source, "reason", "not_authenticated")
-		} else {
-			s.scheduleDelayedServiceRefresh(payload.Source, payload.DelayedRefreshPolicy)
-		}
-	}
 	return map[string]any{"success": true}, nil
-}
-
-func (s *Service) processScheduleDelayedRefresh(payload delayedRefreshScheduleRequest) (map[string]any, error) {
-	trigger := strings.TrimSpace(payload.Trigger)
-	if trigger == "" {
-		trigger = "extension.policy_update"
-	}
-
-	authReady, err := s.canScheduleDelayedRefresh()
-	if err != nil {
-		return nil, internalServerError("failed to verify token state", err)
-	}
-	if !authReady {
-		s.cancelDelayedServiceRefresh("extension.schedule.request_while_signed_out")
-		return map[string]any{
-			"success":   true,
-			"trigger":   trigger,
-			"scheduled": false,
-			"reason":    "not authenticated",
-		}, nil
-	}
-
-	s.scheduleDelayedServiceRefresh(trigger, &payload.Policy)
-	return map[string]any{"success": true, "trigger": trigger}, nil
 }
 
 func (s *Service) processReceiveStudiesResponse(payload interceptedStudiesResponsePayload) (map[string]any, error) {

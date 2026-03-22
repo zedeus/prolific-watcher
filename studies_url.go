@@ -14,7 +14,7 @@ func normalizeStudiesCollectionURL(raw string) (string, bool) {
 	if !strings.EqualFold(u.Scheme, "https") {
 		return "", false
 	}
-	if !strings.EqualFold(u.Host, internalStudiesHost) {
+	if !strings.EqualFold(u.Hostname(), internalStudiesHost) {
 		return "", false
 	}
 

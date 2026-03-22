@@ -24,7 +24,7 @@ func writeError(w http.ResponseWriter, status int, message string, detail error)
 
 func setExtensionCORSHeaders(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
 
@@ -52,11 +52,4 @@ func utcNowOr(t time.Time) time.Time {
 		return time.Now().UTC()
 	}
 	return t.UTC()
-}
-
-func maskToken(token string) string {
-	if len(token) <= 12 {
-		return "***"
-	}
-	return token[:8] + "..." + token[len(token)-4:]
 }

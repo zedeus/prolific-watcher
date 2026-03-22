@@ -24,28 +24,13 @@ const DASHBOARD_DEFAULT_SUBMISSIONS_LIMIT = 100;
 const DASHBOARD_MIN_LIMIT = 1;
 const DASHBOARD_MAX_LIMIT = 500;
 const SERVICE_WS_MESSAGE_TYPES = Object.freeze({
-  token: "receive-token",
-  clearToken: "clear-token",
-  studiesHeaders: "receive-studies-headers",
   studiesRefresh: "receive-studies-refresh",
   studiesResponse: "receive-studies-response",
   submissionResponse: "receive-submission-response",
   participantSubmissionsResponse: "receive-participant-submissions-response",
-  scheduleDelayedRefresh: "schedule-delayed-refresh"
+  reportDebugState: "report-debug-state"
 });
 const SERVICE_WS_COMMANDS = Object.freeze({
-  token: Object.freeze({
-    messageType: SERVICE_WS_MESSAGE_TYPES.token,
-    errorPrefix: "Token endpoint"
-  }),
-  clearToken: Object.freeze({
-    messageType: SERVICE_WS_MESSAGE_TYPES.clearToken,
-    errorPrefix: "Clear token endpoint"
-  }),
-  studiesHeaders: Object.freeze({
-    messageType: SERVICE_WS_MESSAGE_TYPES.studiesHeaders,
-    errorPrefix: "Studies header endpoint"
-  }),
   studiesRefresh: Object.freeze({
     messageType: SERVICE_WS_MESSAGE_TYPES.studiesRefresh,
     errorPrefix: "Studies refresh endpoint"
@@ -62,17 +47,17 @@ const SERVICE_WS_COMMANDS = Object.freeze({
     messageType: SERVICE_WS_MESSAGE_TYPES.participantSubmissionsResponse,
     errorPrefix: "Participant submissions response endpoint"
   }),
-  scheduleDelayedRefresh: Object.freeze({
-    messageType: SERVICE_WS_MESSAGE_TYPES.scheduleDelayedRefresh,
-    errorPrefix: "Delayed refresh schedule endpoint"
+  reportDebugState: Object.freeze({
+    messageType: SERVICE_WS_MESSAGE_TYPES.reportDebugState,
+    errorPrefix: "Debug state report"
   })
 });
 const SERVICE_WS_SERVER_EVENT_TYPES = Object.freeze({
-  studiesRefreshEvent: "studies_refresh_event"
+  studiesRefreshEvent: "studies_refresh_event",
+  openTab: "open-tab"
 });
 
 const STATE_KEY = "syncState";
-const STUDIES_HEADERS_FINGERPRINT_KEY = "lastSentStudiesHeadersFingerprint";
 const PRIORITY_KNOWN_STUDIES_STATE_KEY = "priorityKnownStudiesState";
 const AUTO_OPEN_PROLIFIC_TAB_KEY = "autoOpenProlificTab";
 const AUTO_OPEN_PRIORITY_STUDIES_KEY = "autoOpenPriorityStudies";
@@ -149,17 +134,29 @@ const DEBUG_LOG_SUPPRESSED_EVENTS = new Set([
   "studies.response.capture.before_request",
   "studies.response.capture.before_request.skip_non_collection",
   "studies.response.capture.stop",
-  "studies.response.capture.skip_non_collection",
-  "studies.headers.capture.skip_non_collection",
-  "studies.headers.capture.skip_same_fingerprint"
+  "studies.response.capture.skip_non_collection"
 ]);
 
 const PROLIFIC_STUDIES_URL = "https://app.prolific.com/studies";
 const STUDIES_COLLECTION_PATH = "/api/v1/participant/studies/";
 
+// TODO: Consider switching to api.prolific.com/?is_assistant=1 (used by Prolific Assistant extension).
+const FETCH_STUDIES_API_URL = "https://internal-api.prolific.com/api/v1/participant/studies/";
+const FETCH_STUDIES_EXT_MARKER = "_pwext";
+
+function isExtensionOriginatedStudiesRequest(url) {
+  try {
+    return new URL(url).searchParams.has(FETCH_STUDIES_EXT_MARKER);
+  } catch {
+    return false;
+  }
+}
+
+let delayedRefreshTimers = [];
+let delayedRefreshGeneration = 0;
+
 let syncInProgress = false;
 let pendingSyncTrigger = "";
-let studiesHeaderListenerRegistered = false;
 let studiesCompletedListenerRegistered = false;
 let studiesResponseCaptureRegistered = false;
 let submissionResponseCaptureRegistered = false;
@@ -235,6 +232,7 @@ async function setState(patch) {
     ...previous,
     ...patch
   }));
+  scheduleDebugStateReport();
 }
 
 async function setTokenSyncState({ ok, trigger, reason, authRequired = false, extra = {} }) {
@@ -285,10 +283,6 @@ async function clearTransientServiceConnectingState() {
     if (previous.token_ok === false && isServiceConnectingMessage(previous.token_reason)) {
       patch.token_ok = null;
       patch.token_reason = "";
-    }
-    if (previous.studies_headers_ok === false && isServiceConnectingMessage(previous.studies_headers_reason)) {
-      patch.studies_headers_ok = null;
-      patch.studies_headers_reason = "";
     }
     if (previous.studies_refresh_ok === false && isServiceConnectingMessage(previous.studies_refresh_reason)) {
       patch.studies_refresh_ok = null;
@@ -646,14 +640,6 @@ function safeJSONStringify(value) {
   }
 }
 
-async function sha256Hex(input) {
-  const bytes = new TextEncoder().encode(input);
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 function getFilterResponseDataFunction() {
   if (
     typeof browser !== "undefined" &&
@@ -728,58 +714,385 @@ function normalizeParticipantSubmissionsURL(raw) {
 }
 
 async function extractTokenFromTab(tabId) {
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      try {
-        let oidcKey = null;
-        for (let i = 0; i < window.localStorage.length; i += 1) {
-          const key = window.localStorage.key(i);
-          if (key && key.startsWith("oidc.user")) {
-            oidcKey = key;
-            break;
-          }
-        }
-
-        if (!oidcKey) {
-          return { error: "No oidc.user* key found in localStorage." };
-        }
-
-        const raw = window.localStorage.getItem(oidcKey);
-        if (!raw) {
-          return { error: `Key ${oidcKey} has no value.` };
-        }
-
-        let parsed;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
         try {
-          parsed = JSON.parse(raw);
-        } catch (parseError) {
-          return { error: `Value for ${oidcKey} is not valid JSON: ${String(parseError)}` };
-        }
+          let oidcKey = null;
+          for (let i = 0; i < window.localStorage.length; i += 1) {
+            const key = window.localStorage.key(i);
+            if (key && key.startsWith("oidc.user")) {
+              oidcKey = key;
+              break;
+            }
+          }
 
-        if (!parsed || typeof parsed !== "object" || !parsed.access_token) {
-          return { error: `Value for ${oidcKey} does not contain access_token.` };
-        }
+          if (!oidcKey) {
+            return { error: "No oidc.user* key found in localStorage." };
+          }
 
-        return {
-          key: oidcKey,
-          origin: window.location.origin,
-          access_token: parsed.access_token,
-          token_type: parsed.token_type || "Bearer",
-          browser_info: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
-        };
-      } catch (error) {
-        return {
-          error: error instanceof Error ? error.message : String(error)
-        };
+          const raw = window.localStorage.getItem(oidcKey);
+          if (!raw) {
+            return { error: `Key ${oidcKey} has no value.` };
+          }
+
+          let parsed;
+          try {
+            parsed = JSON.parse(raw);
+          } catch (parseError) {
+            return { error: `Value for ${oidcKey} is not valid JSON: ${String(parseError)}` };
+          }
+
+          if (!parsed || typeof parsed !== "object" || !parsed.access_token) {
+            return { error: `Value for ${oidcKey} does not contain access_token.` };
+          }
+
+          return {
+            key: oidcKey,
+            origin: window.location.origin,
+            access_token: parsed.access_token,
+            token_type: parsed.token_type || "Bearer",
+            browser_info: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
+          };
+        } catch (error) {
+          return {
+            error: error instanceof Error ? error.message : String(error)
+          };
+        }
+      }
+    });
+
+    if (!results || !results.length) {
+      return { error: "No script execution result." };
+    }
+    return results[0].result || { error: "Empty script result." };
+  } catch (scriptError) {
+    return { error: "Script injection not available: " + String(scriptError.message || scriptError) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MAIN-world studies fetch (runs inside the open Prolific tab)
+// ---------------------------------------------------------------------------
+
+async function fetchStudiesInTab(tabId) {
+  const existing = await chrome.storage.local.get(STATE_KEY);
+  const state = existing[STATE_KEY] || {};
+  let accessToken = state.access_token;
+  let tokenType = state.token_type || "Bearer";
+
+  if (!accessToken) {
+    return fetchStudiesInTabViaScripting(tabId);
+  }
+
+  // Make fetch from background context
+  const fetchURL = FETCH_STUDIES_API_URL + "?" + FETCH_STUDIES_EXT_MARKER + "=1";
+  try {
+    const resp = await fetch(fetchURL, {
+      method: "GET",
+      credentials: "omit",
+      headers: {
+        "Authorization": tokenType + " " + accessToken,
+        "Accept": "application/json, text/plain, */*"
+      }
+    });
+    const body = await resp.text();
+    return { ok: true, status_code: resp.status, body };
+  } catch (err) {
+    return { ok: false, error: "fetch_failed: " + String(err) };
+  }
+}
+
+async function fetchStudiesInTabViaScripting(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: (apiURL) => {
+        try {
+          let oidcKey = null;
+          for (let i = 0; i < window.localStorage.length; i += 1) {
+            const key = window.localStorage.key(i);
+            if (key && key.startsWith("oidc.user")) {
+              oidcKey = key;
+              break;
+            }
+          }
+          if (!oidcKey) {
+            return { ok: false, error: "no_oidc_token" };
+          }
+          const raw = window.localStorage.getItem(oidcKey);
+          if (!raw) {
+            return { ok: false, error: "empty_oidc_value" };
+          }
+          let parsed;
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            return { ok: false, error: "invalid_oidc_json" };
+          }
+          if (!parsed || !parsed.access_token) {
+            return { ok: false, error: "missing_access_token" };
+          }
+
+          const tokenType = parsed.token_type || "Bearer";
+          const fetchURL = apiURL + (apiURL.includes("?") ? "&" : "?") + "_pwext=1";
+          return fetch(fetchURL, {
+            method: "GET",
+            credentials: "omit",
+            headers: {
+              "Authorization": tokenType + " " + parsed.access_token,
+              "Accept": "application/json, text/plain, */*"
+            }
+          })
+            .then((resp) =>
+              resp.text().then((body) => ({
+                ok: true,
+                status_code: resp.status,
+                body
+              }))
+            )
+            .catch((fetchErr) => ({
+              ok: false,
+              error: "fetch_failed: " + String(fetchErr)
+            }));
+        } catch (err) {
+          return { ok: false, error: String(err) };
+        }
+      },
+      args: [FETCH_STUDIES_API_URL]
+    });
+
+    if (!results || !results.length || !results[0].result) {
+      return { ok: false, error: "no_script_result" };
+    }
+    return results[0].result;
+  } catch (scriptError) {
+    return { ok: false, error: "script_injection_failed: " + String(scriptError.message || scriptError) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Delayed refresh scheduling (ported from auto_refresh.go)
+// ---------------------------------------------------------------------------
+
+function planDelayedRefreshCount(policy) {
+  const maxByMinimum = Math.floor(policy.cycle_seconds / policy.minimum_delay_seconds) - 1;
+  const maxByAverage = Math.floor(policy.cycle_seconds / policy.average_delay_seconds) - 1;
+  const count = Math.min(maxByMinimum, maxByAverage);
+  return count < 0 ? 0 : count;
+}
+
+function planDelayedRefreshSchedule(policy) {
+  const count = planDelayedRefreshCount(policy);
+  if (count <= 0) return [];
+
+  const cycleSeconds = policy.cycle_seconds;
+  const minGapSeconds = policy.minimum_delay_seconds;
+  const spreadSeconds = policy.spread_seconds;
+  const segments = count + 1;
+
+  const centers = [];
+  for (let i = 0; i < count; i++) {
+    centers.push((cycleSeconds * (i + 1)) / segments);
+  }
+
+  const lows = new Array(count);
+  const highs = new Array(count);
+  for (let i = 0; i < count; i++) {
+    let low = centers[i] - spreadSeconds;
+    let high = centers[i] + spreadSeconds;
+    const minByBoundary = (i + 1) * minGapSeconds;
+    const maxByBoundary = cycleSeconds - (count - i) * minGapSeconds;
+    if (low < minByBoundary) low = minByBoundary;
+    if (high > maxByBoundary) high = maxByBoundary;
+    lows[i] = low;
+    highs[i] = high;
+  }
+
+  for (let i = 1; i < count; i++) {
+    const minAllowed = lows[i - 1] + minGapSeconds;
+    if (lows[i] < minAllowed) lows[i] = minAllowed;
+  }
+  for (let i = count - 2; i >= 0; i--) {
+    const maxAllowed = highs[i + 1] - minGapSeconds;
+    if (highs[i] > maxAllowed) highs[i] = maxAllowed;
+  }
+
+  for (let i = 0; i < count; i++) {
+    if (lows[i] > highs[i]) {
+      return centers.map((c) => c * 1000);
+    }
+  }
+
+  const chosen = new Array(count);
+  for (let i = 0; i < count; i++) {
+    let low = lows[i];
+    if (i > 0) {
+      const minAllowed = chosen[i - 1] + minGapSeconds;
+      if (low < minAllowed) low = minAllowed;
+    }
+    let high = highs[i];
+    if (low > high) low = high;
+    if (high <= low) {
+      chosen[i] = low;
+      continue;
+    }
+
+    let lowInt = Math.ceil(low);
+    let highInt = Math.floor(high);
+    if (lowInt > highInt) {
+      chosen[i] = low;
+      continue;
+    }
+    if (i > 0) {
+      const prevFloor = Math.floor(chosen[i - 1]);
+      const minAllowedInt = prevFloor + policy.minimum_delay_seconds;
+      if (lowInt < minAllowedInt) lowInt = minAllowedInt;
+      if (lowInt > highInt) {
+        chosen[i] = highInt;
+        continue;
       }
     }
+    const span = highInt - lowInt + 1;
+    let pick = lowInt;
+    if (span > 1) {
+      let offset = Math.floor(Math.random() * span);
+      if (offset < 0) offset = 0;
+      if (offset >= span) offset = span - 1;
+      pick = lowInt + offset;
+    }
+    chosen[i] = pick;
+  }
+
+  return chosen.map((s) => s * 1000);
+}
+
+function cancelDelayedRefreshes(reason) {
+  delayedRefreshGeneration++;
+  for (const timer of delayedRefreshTimers) {
+    clearTimeout(timer);
+  }
+  delayedRefreshTimers = [];
+  pushDebugLog("refresh.delayed.cleared", { reason, generation: delayedRefreshGeneration });
+}
+
+async function runDelayedRefresh(triggerSource, generation, runIndex, runTotal) {
+  if (generation !== delayedRefreshGeneration) return;
+
+  const tabs = await queryProlificTabs();
+  if (!tabs.length) {
+    pushDebugLog("refresh.delayed.skip_no_tab", { trigger_source: triggerSource, run_index: runIndex });
+    return;
+  }
+
+  const tabId = tabs[0].id;
+  pushDebugLog("refresh.delayed.fetch_start", {
+    trigger_source: triggerSource,
+    run_index: runIndex,
+    run_total: runTotal,
+    tab_id: tabId
   });
 
-  if (!results || !results.length) {
-    return { error: "No script execution result." };
+  const result = await fetchStudiesInTab(tabId);
+  if (!result.ok) {
+    pushDebugLog("refresh.delayed.fetch_failed", {
+      trigger_source: triggerSource,
+      run_index: runIndex,
+      error: result.error
+    });
+    return;
   }
-  return results[0].result || { error: "Empty script result." };
+
+  const observedAt = nowIso();
+  const normalizedURL = FETCH_STUDIES_API_URL;
+
+  if (result.status_code === 200) {
+    let parsedBody;
+    try {
+      parsedBody = JSON.parse(result.body);
+    } catch (parseErr) {
+      pushDebugLog("refresh.delayed.body_parse_error", {
+        trigger_source: triggerSource,
+        run_index: runIndex,
+        error: String(parseErr)
+      });
+    }
+
+    if (parsedBody) {
+      try {
+        await sendServiceCommandByName("studiesResponse", {
+          url: normalizedURL,
+          status_code: result.status_code,
+          observed_at: observedAt,
+          body: parsedBody
+        });
+      } catch (err) {
+        pushDebugLog("refresh.delayed.send_response_error", {
+          trigger_source: triggerSource,
+          run_index: runIndex,
+          error: stringifyError(err)
+        });
+      }
+
+      const snapshotEvent = priorityAdapters.toFullSnapshotEvent(parsedBody, {
+        normalizedURL,
+        observedAt
+      });
+      if (snapshotEvent) {
+        queuePrioritySnapshotEvent(snapshotEvent);
+      }
+    }
+  }
+
+  try {
+    await sendServiceCommandByName("studiesRefresh", {
+      observed_at: observedAt,
+      source: "extension.delayed_refresh",
+      url: normalizedURL,
+      status_code: result.status_code
+    });
+  } catch (err) {
+    pushDebugLog("refresh.delayed.send_refresh_error", {
+      trigger_source: triggerSource,
+      run_index: runIndex,
+      error: stringifyError(err)
+    });
+  }
+
+  pushDebugLog("refresh.delayed.completed", {
+    trigger_source: triggerSource,
+    run_index: runIndex,
+    run_total: runTotal,
+    status_code: result.status_code
+  });
+}
+
+function scheduleDelayedRefreshes(triggerSource, policy) {
+  cancelDelayedRefreshes("reschedule:" + triggerSource);
+  const currentGen = delayedRefreshGeneration;
+  const delays = planDelayedRefreshSchedule(policy);
+
+  delayedRefreshTimers = delays.map((delayMs, idx) =>
+    setTimeout(() => {
+      runDelayedRefresh(triggerSource, currentGen, idx + 1, delays.length).catch((err) => {
+        pushDebugLog("refresh.delayed.run_error", {
+          trigger_source: triggerSource,
+          run_index: idx + 1,
+          error: stringifyError(err)
+        });
+      });
+    }, delayMs)
+  );
+
+  const fireTimes = delays.map((ms) => new Date(Date.now() + ms).toISOString());
+  pushDebugLog("refresh.delayed.schedule", {
+    trigger_source: triggerSource,
+    count: delays.length,
+    policy,
+    fire_at: fireTimes
+  });
 }
 
 function isServiceSocketReady() {
@@ -792,6 +1105,42 @@ function updateServiceSocketState(connected, reason) {
     service_ws_reason: reason,
     service_ws_last_at: nowIso()
   });
+}
+
+let debugStateReportTimer = null;
+const DEBUG_STATE_REPORT_DEBOUNCE_MS = 2000;
+
+function sendDebugStateReport() {
+  if (!isServiceSocketReady()) {
+    return;
+  }
+  chrome.storage.local.get(STATE_KEY, (data) => {
+    if (!isServiceSocketReady()) {
+      return;
+    }
+    const syncState = data[STATE_KEY] || {};
+    const { debug_logs, ...stateWithoutLogs } = syncState;
+    const payload = {
+      extension_url: chrome.runtime.getURL(""),
+      sync_state: stateWithoutLogs,
+      debug_log_count: Array.isArray(debug_logs) ? debug_logs.length : 0
+    };
+    try {
+      queueServiceSocketMessage(SERVICE_WS_MESSAGE_TYPES.reportDebugState, payload);
+    } catch {
+      // Best effort — server may not be ready.
+    }
+  });
+}
+
+function scheduleDebugStateReport() {
+  if (debugStateReportTimer) {
+    clearTimeout(debugStateReportTimer);
+  }
+  debugStateReportTimer = setTimeout(() => {
+    debugStateReportTimer = null;
+    sendDebugStateReport();
+  }, DEBUG_STATE_REPORT_DEBOUNCE_MS);
 }
 
 function startServiceSocketHeartbeatLoop() {
@@ -934,6 +1283,7 @@ function ensureServiceSocketConnected(reason) {
     clearTransientServiceConnectingState();
     startServiceSocketHeartbeatLoop();
     scheduleTokenSyncRetry("service.ws.connected", 0);
+    scheduleDebugStateReport();
   };
 
   socket.onmessage = (event) => {
@@ -958,6 +1308,29 @@ function ensureServiceSocketConnected(reason) {
       const observedAt = extractObservedAtFromStudiesRefreshEvent(parsed);
       notifyPopupDashboardUpdated("service.ws.studies_refresh_event", observedAt);
       queuePrioritySnapshotEvent(priorityAdapters.extractPrioritySnapshotEventFromStudiesRefreshMessage(parsed, extractObservedAtFromStudiesRefreshEvent));
+      return;
+    }
+
+    if (messageType === SERVICE_WS_SERVER_EVENT_TYPES.openTab) {
+      const data = parsed.data && typeof parsed.data === "object" ? parsed.data : {};
+      const tabUrl = typeof data.url === "string" ? data.url : "";
+      pushDebugLog("service.ws.open_tab", { url: tabUrl });
+      if (tabUrl) {
+        // Find an about:blank tab (pre-created by the test harness) and navigate it.
+        // This keeps Playwright tracking the page even after moz-extension:// navigation.
+        browser.tabs.query({}).then(tabs => {
+          const blankTab = tabs.find(t => t.url === "about:blank");
+          if (blankTab) {
+            pushDebugLog("service.ws.open_tab.update", { tabId: blankTab.id, url: tabUrl });
+            return browser.tabs.update(blankTab.id, { url: tabUrl });
+          }
+          pushDebugLog("service.ws.open_tab.create", { url: tabUrl, allTabs: tabs.map(t => t.url) });
+          return browser.tabs.create({ url: tabUrl, active: false });
+        }).then(
+          (tab) => pushDebugLog("service.ws.open_tab.ok", { tabId: tab?.id }),
+          (err) => pushDebugLog("service.ws.open_tab.error", { error: String(err) })
+        );
+      }
       return;
     }
 
@@ -1330,17 +1703,8 @@ async function syncTokenOnce(trigger) {
     }
 
     if (!extracted) {
-      const reason = "extension.no_oidc_user_token";
-      try {
-        await sendServiceCommandByName("clearToken", { reason });
-        pushDebugLog("token.service_cleared", { trigger: normalizedTrigger, reason });
-      } catch (clearError) {
-        pushDebugLog("token.service_clear.error", {
-          trigger: normalizedTrigger,
-          reason,
-          error: stringifyError(clearError)
-        });
-      }
+      cancelDelayedRefreshes("token_cleared");
+      pushDebugLog("token.cleared_local", { trigger: normalizedTrigger, reason: "extension.no_oidc_user_token" });
 
       await setTokenSyncState({
         ok: false,
@@ -1355,23 +1719,17 @@ async function syncTokenOnce(trigger) {
       return;
     }
 
-    await sendServiceCommandByName("token", {
-      access_token: extracted.access_token,
-      token_type: extracted.token_type || "Bearer",
-      key: extracted.key,
-      origin: extracted.origin,
-      browser_info: extracted.browser_info || "UTC"
-    });
-
     await setTokenSyncState({
       ok: true,
       authRequired: false,
       trigger: normalizedTrigger,
-      reason: "Token synced to Go service.",
+      reason: "Token available.",
       extra: {
         token_key: extracted.key,
         token_origin: extracted.origin,
-        token_last_success_at: nowIso()
+        token_last_success_at: nowIso(),
+        access_token: extracted.access_token,
+        token_type: extracted.token_type || "Bearer"
       }
     });
     bumpCounter("token_sync_success_count", 1);
@@ -1405,40 +1763,21 @@ async function handleOAuthTokenPayload(payload, trigger, originHint) {
     return;
   }
 
-  try {
-    const browserInfo = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    await sendServiceCommandByName("token", {
-      access_token: String(payload.access_token),
-      token_type: payload.token_type || "Bearer",
-      key: "oauth.token.response",
-      origin: originHint || "https://auth.prolific.com",
-      browser_info: browserInfo
-    });
-
-    await setTokenSyncState({
-      ok: true,
-      authRequired: false,
-      trigger,
-      reason: "Captured access_token from oauth/token response.",
-      extra: {
-        token_key: "oauth.token.response",
-        token_origin: originHint || "https://auth.prolific.com",
-        token_last_success_at: nowIso()
-      }
-    });
-    bumpCounter("oauth_token_capture_success_count", 1);
-    pushDebugLog("oauth.capture.ok", { trigger, origin: originHint || "https://auth.prolific.com" });
-  } catch (error) {
-    await setTokenSyncState({
-      ok: false,
-      authRequired: false,
-      trigger,
-      reason: stringifyError(error)
-    });
-    bumpCounter("oauth_token_capture_error_count", 1);
-    pushDebugLog("oauth.capture.error", { trigger, error: stringifyError(error) });
-    await requestTokenSync(`${trigger}.post_failed_resync`);
-  }
+  await setTokenSyncState({
+    ok: true,
+    authRequired: false,
+    trigger,
+    reason: "Captured access_token from oauth/token response.",
+    extra: {
+      token_key: "oauth.token.response",
+      token_origin: originHint || "https://auth.prolific.com",
+      token_last_success_at: nowIso(),
+      access_token: payload.access_token,
+      token_type: payload.token_type || "Bearer"
+    }
+  });
+  bumpCounter("oauth_token_capture_success_count", 1);
+  pushDebugLog("oauth.capture.ok", { trigger, origin: originHint || "https://auth.prolific.com" });
 }
 
 function tapOAuthTokenResponse(details) {
@@ -1686,89 +2025,12 @@ function tapCapturedJSONResponse(details, options, normalizedURLOverride = "") {
   });
 }
 
-function normalizeHeaders(headers) {
-  if (!Array.isArray(headers)) {
-    return [];
-  }
-
-  const normalized = [];
-  for (const header of headers) {
-    if (!header || !header.name) {
-      continue;
-    }
-
-    if (typeof header.value === "string") {
-      normalized.push({ name: header.name, value: header.value });
-      continue;
-    }
-
-    if (header.binaryValue && Array.isArray(header.binaryValue)) {
-      const value = String.fromCharCode(...header.binaryValue);
-      normalized.push({ name: header.name, value });
-    }
-  }
-
-  return normalized;
-}
-
-async function captureStudiesRequestHeaders(details) {
-  const normalizedURL = normalizeStudiesCollectionURL(details.url);
-  if (!normalizedURL) {
-    await pushDebugLog("studies.headers.capture.skip_non_collection", { url: details.url });
+async function handleStudiesRequestCompleted(details) {
+  if (isExtensionOriginatedStudiesRequest(details.url)) {
+    pushDebugLog("studies.request.completed.skip_extension_originated", { url: details.url });
     return;
   }
 
-  try {
-    const headers = normalizeHeaders(details.requestHeaders);
-    if (!headers.length) {
-      pushDebugLog("studies.headers.capture.empty_headers", { url: normalizedURL });
-      return;
-    }
-
-    const payload = {
-      url: normalizedURL,
-      method: details.method || "GET",
-      headers,
-      captured_at: nowIso()
-    };
-
-    const fingerprint = await sha256Hex(JSON.stringify({
-      url: payload.url,
-      method: payload.method,
-      headers: payload.headers
-    }));
-
-    const stored = await chrome.storage.local.get(STUDIES_HEADERS_FINGERPRINT_KEY);
-    if (stored[STUDIES_HEADERS_FINGERPRINT_KEY] === fingerprint) {
-      bumpCounter("studies_headers_dedupe_skip_count", 1);
-      pushDebugLog("studies.headers.capture.skip_same_fingerprint", { url: normalizedURL });
-      return;
-    }
-
-    await sendServiceCommandByName("studiesHeaders", payload);
-    await chrome.storage.local.set({ [STUDIES_HEADERS_FINGERPRINT_KEY]: fingerprint });
-
-    await setState({
-      studies_headers_ok: true,
-      studies_headers_reason: "Captured studies request headers and sent to Go service.",
-      studies_headers_last_at: nowIso(),
-      studies_headers_count: headers.length,
-      studies_headers_url: normalizedURL
-    });
-    bumpCounter("studies_headers_capture_success_count", 1);
-    pushDebugLog("studies.headers.capture.ok", { url: normalizedURL, count: headers.length });
-  } catch (error) {
-    await setState({
-      studies_headers_ok: false,
-      studies_headers_reason: stringifyError(error),
-      studies_headers_last_at: nowIso()
-    });
-    bumpCounter("studies_headers_capture_error_count", 1);
-    pushDebugLog("studies.headers.capture.error", { url: normalizedURL, error: stringifyError(error) });
-  }
-}
-
-async function handleStudiesRequestCompleted(details) {
   const normalizedURL = normalizeStudiesCollectionURL(details.url);
   if (!normalizedURL) {
     await pushDebugLog("studies.request.completed.skip_non_collection", {
@@ -1791,8 +2053,7 @@ async function handleStudiesRequestCompleted(details) {
       observed_at: observedAt,
       source: "extension.intercepted_response",
       url: normalizedURL,
-      status_code: details.statusCode || 0,
-      delayed_refresh_policy: refreshPolicy
+      status_code: details.statusCode || 0
     });
 
     await setStudiesRefreshState(true, "");
@@ -1803,6 +2064,8 @@ async function handleStudiesRequestCompleted(details) {
         url: normalizedURL,
         status_code: 200
       });
+
+      scheduleDelayedRefreshes("extension.intercepted_response", refreshPolicy);
     }
   } catch (error) {
     await setStudiesRefreshState(false, stringifyError(error));
@@ -1813,29 +2076,6 @@ async function handleStudiesRequestCompleted(details) {
       error: stringifyError(error)
     });
   }
-}
-
-function registerStudiesHeaderCapture() {
-  if (studiesHeaderListenerRegistered) {
-    return;
-  }
-  if (!chrome.webRequest || !chrome.webRequest.onBeforeSendHeaders) {
-    pushDebugLog("studies.headers.listener.unavailable", {});
-    return;
-  }
-
-  const listener = (details) => {
-    captureStudiesRequestHeaders(details);
-  };
-
-  const filter = { urls: [STUDIES_REQUEST_PATTERN] };
-  try {
-    chrome.webRequest.onBeforeSendHeaders.addListener(listener, filter, ["requestHeaders", "extraHeaders"]);
-  } catch {
-    chrome.webRequest.onBeforeSendHeaders.addListener(listener, filter, ["requestHeaders"]);
-  }
-  studiesHeaderListenerRegistered = true;
-  pushDebugLog("studies.headers.listener.registered", {});
 }
 
 function registerStudiesCompletedCapture() {
@@ -1955,6 +2195,9 @@ function registerStudiesResponseCaptureIfSupported() {
       });
     },
     onBeforeRequest: (details) => {
+      if (isExtensionOriginatedStudiesRequest(details.url)) {
+        return;
+      }
       const normalizedURL = normalizeStudiesCollectionURL(details.url);
       if (!normalizedURL) {
         pushDebugLog("studies.response.capture.before_request.skip_non_collection", {
@@ -2085,7 +2328,6 @@ function schedule() {
 }
 
 function registerCaptureListeners() {
-  registerStudiesHeaderCapture();
   registerStudiesCompletedCapture();
   registerStudiesResponseCaptureIfSupported();
   registerSubmissionResponseCaptureIfSupported();
@@ -2372,16 +2614,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         settings: buildRefreshSettingsResponse(refreshPolicy)
       });
 
-      sendServiceCommandByName("scheduleDelayedRefresh", {
-        policy: refreshPolicy,
-        trigger: "extension.settings.save"
-      })
-        .then(() => {
-          pushDebugLog("settings.studies_refresh_policy.schedule_ok", refreshPolicy);
-        })
-        .catch((error) => {
-          pushDebugLog("settings.studies_refresh_policy.schedule_error", { error: stringifyError(error) });
-        });
+      scheduleDelayedRefreshes("extension.settings.save", refreshPolicy);
+      pushDebugLog("settings.studies_refresh_policy.schedule_ok", refreshPolicy);
 
       setState({
         studies_refresh_min_delay_seconds: refreshPolicy.minimum_delay_seconds,

@@ -36,6 +36,11 @@
       "background.js"
     ]
   },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "localstorage-viewer@prolific-watcher"
+    }
+  },
   "action": {
     "default_title": "LocalStorage Viewer",
     "default_popup": "popup.html"

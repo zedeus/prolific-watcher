@@ -39,22 +39,6 @@ func openSQLite(path string) (*sql.DB, error) {
 
 func applyMigrations(db *sql.DB) error {
 	statements := []string{
-		`CREATE TABLE IF NOT EXISTS token_state (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
-			access_token TEXT NOT NULL,
-			token_type TEXT NOT NULL,
-			storage_key TEXT,
-			origin TEXT,
-			browser_info TEXT,
-			received_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS studies_headers_state (
-			id INTEGER PRIMARY KEY CHECK (id = 1),
-			url TEXT NOT NULL,
-			method TEXT NOT NULL,
-			headers_json TEXT NOT NULL,
-			captured_at TEXT NOT NULL
-		);`,
 		`CREATE TABLE IF NOT EXISTS studies_latest (
 			study_id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,

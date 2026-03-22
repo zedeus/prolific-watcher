@@ -19,15 +19,13 @@ const (
 	wsTypeAck                       = "ack"
 	wsTypeHeartbeat                 = "heartbeat"
 	wsTypeHeartbeatAck              = "heartbeat_ack"
-	wsTypeReceiveToken              = "receive-token"
-	wsTypeClearToken                = "clear-token"
-	wsTypeStudiesHeaders            = "receive-studies-headers"
 	wsTypeStudiesRefresh            = "receive-studies-refresh"
 	wsTypeStudiesResponse           = "receive-studies-response"
 	wsTypeSubmission                = "receive-submission-response"
 	wsTypeParticipantSubs           = "receive-participant-submissions-response"
-	wsTypeScheduleDelayed           = "schedule-delayed-refresh"
+	wsTypeDebugState                = "report-debug-state"
 	wsTypeStudiesRefreshEvent       = "studies_refresh_event"
+	wsTypeOpenTab                   = "open-tab"
 	wsWriteTimeout                  = 10 * time.Second
 	wsReadLimitBytes          int64 = 8 << 20
 )
@@ -213,12 +211,6 @@ func (s *Service) handleWSRequest(request wsClientMessage) wsServerMessage {
 
 func (s *Service) dispatchWSRequest(requestType string, payload json.RawMessage) (map[string]any, error) {
 	switch requestType {
-	case wsTypeReceiveToken:
-		return decodeWSAndDispatch(payload, true, s.processReceiveToken)
-	case wsTypeClearToken:
-		return decodeWSAndDispatch(payload, false, s.processClearToken)
-	case wsTypeStudiesHeaders:
-		return decodeWSAndDispatch(payload, true, s.processReceiveStudiesHeaders)
 	case wsTypeStudiesRefresh:
 		return decodeWSAndDispatch(payload, true, s.processReceiveStudiesRefresh)
 	case wsTypeStudiesResponse:
@@ -227,8 +219,8 @@ func (s *Service) dispatchWSRequest(requestType string, payload json.RawMessage)
 		return decodeWSAndDispatch(payload, true, s.processReceiveSubmissionResponse)
 	case wsTypeParticipantSubs:
 		return decodeWSAndDispatch(payload, true, s.processReceiveParticipantSubmissionsResponse)
-	case wsTypeScheduleDelayed:
-		return decodeWSAndDispatch(payload, true, s.processScheduleDelayedRefresh)
+	case wsTypeDebugState:
+		return s.processDebugState(payload)
 	default:
 		return nil, badRequest(fmt.Sprintf("unknown message type %q", requestType), nil)
 	}
@@ -258,6 +250,40 @@ func decodeWSPayload(raw json.RawMessage, dst any, required bool) error {
 		return badRequest("invalid payload", err)
 	}
 	return nil
+}
+
+func (s *Service) processDebugState(payload json.RawMessage) (map[string]any, error) {
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, badRequest("missing payload", nil)
+	}
+	if !json.Valid(trimmed) {
+		return nil, badRequest("invalid JSON payload", nil)
+	}
+
+	now := time.Now().UTC()
+	s.extensionDebugStateMu.Lock()
+	s.extensionDebugState = append(json.RawMessage(nil), trimmed...)
+	s.extensionDebugStateAt = now
+	s.extensionDebugStateMu.Unlock()
+
+	return map[string]any{"received": true}, nil
+}
+
+func (s *Service) broadcastOpenTab(tabURL string) int {
+	msg := wsServerMessage{
+		Type: wsTypeOpenTab,
+		Data: map[string]any{"url": tabURL},
+		At:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	clients := s.snapshotWSClients()
+	for _, client := range clients {
+		if err := s.writeWSMessage(context.Background(), client, msg); err != nil {
+			logWarn("ws.broadcast_failed", "type", wsTypeOpenTab, "error", err)
+		}
+	}
+	return len(clients)
 }
 
 func wsErrorMessage(err error) string {

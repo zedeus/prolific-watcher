@@ -13,13 +13,11 @@ func main() {
 	}
 	defer db.Close()
 
-	tokenStore := NewTokenStore(db)
-	headersStore := NewStudiesHeaderStore(db)
 	studiesStore := NewStudiesStore(db)
 	submissionsStore := NewSubmissionsStore(db)
 	stateStore := NewServiceStateStore(db)
 
-	service := NewService(tokenStore, headersStore, studiesStore, submissionsStore, stateStore)
+	service := NewService(studiesStore, submissionsStore, stateStore)
 
 	mux := http.NewServeMux()
 	service.RegisterRoutes(mux)

@@ -8,8 +8,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	azuretls "github.com/Noooste/azuretls-client"
 )
 
 func (s *Service) handleHome(w http.ResponseWriter, _ *http.Request) {
@@ -23,36 +21,7 @@ func (s *Service) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Service) handleStatus(w http.ResponseWriter, _ *http.Request) {
-	token, err := s.tokenStore.Get()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load token state", nil)
-		return
-	}
-
-	capture, err := s.headersStore.Get()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load studies headers state", nil)
-		return
-	}
-
-	status := map[string]any{
-		"has_token":           token != nil,
-		"has_studies_headers": capture != nil,
-	}
-	if token != nil {
-		status["token_type"] = token.TokenType
-		status["token_preview"] = maskToken(token.AccessToken)
-		status["origin"] = token.Origin
-		status["browser_info"] = token.BrowserInfo
-		status["key"] = token.Key
-		status["received_at"] = token.ReceivedAt
-	}
-	if capture != nil {
-		status["studies_headers_url"] = capture.URL
-		status["studies_headers_method"] = capture.Method
-		status["studies_headers_count"] = len(capture.Headers)
-		status["studies_headers_captured_at"] = capture.CapturedAt
-	}
+	status := map[string]any{}
 
 	if s.stateStore != nil {
 		refreshState, err := s.stateStore.GetStudiesRefresh()
@@ -69,32 +38,6 @@ func (s *Service) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, status)
-}
-
-func (s *Service) handleToken(w http.ResponseWriter, _ *http.Request) {
-	token, err := s.tokenStore.Get()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load token state", nil)
-		return
-	}
-	if token == nil {
-		writeError(w, http.StatusNotFound, "no token available", nil)
-		return
-	}
-	writeJSON(w, http.StatusOK, token)
-}
-
-func (s *Service) handleStudiesHeaders(w http.ResponseWriter, _ *http.Request) {
-	capture, err := s.headersStore.Get()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load studies headers state", nil)
-		return
-	}
-	if capture == nil {
-		writeError(w, http.StatusNotFound, "no captured studies headers available", nil)
-		return
-	}
-	writeJSON(w, http.StatusOK, capture)
 }
 
 func (s *Service) handleStudyEvents(w http.ResponseWriter, r *http.Request) {
@@ -187,15 +130,6 @@ func (s *Service) handleStudiesRefresh(w http.ResponseWriter, r *http.Request) {
 		"last_studies_refresh_status": state.LastStudiesRefreshStatus,
 		"updated_at":                  state.UpdatedAt,
 	})
-}
-
-type clearTokenRequest struct {
-	Reason string `json:"reason"`
-}
-
-type delayedRefreshScheduleRequest struct {
-	Policy  DelayedRefreshPolicy `json:"policy"`
-	Trigger string               `json:"trigger"`
 }
 
 type interceptedStudiesResponsePayload struct {
@@ -621,48 +555,35 @@ func (s *Service) ingestStudiesPayload(
 	return normalizedBody, availability, nil
 }
 
-func buildStudiesHeaders(token *StoredToken, capture *StudiesHeadersCapture) azuretls.OrderedHeaders {
-	tokenType := strings.TrimSpace(token.TokenType)
-	if tokenType == "" {
-		tokenType = "Bearer"
+func (s *Service) handleDebugExtensionState(w http.ResponseWriter, _ *http.Request) {
+	s.extensionDebugStateMu.Lock()
+	state := append(json.RawMessage(nil), s.extensionDebugState...)
+	receivedAt := s.extensionDebugStateAt
+	s.extensionDebugStateMu.Unlock()
+
+	if len(state) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"has_state": false})
+		return
 	}
 
-	browserInfo := strings.TrimSpace(token.BrowserInfo)
-	if browserInfo == "" {
-		browserInfo = "UTC"
+	writeJSON(w, http.StatusOK, map[string]any{
+		"has_state":   true,
+		"received_at": receivedAt.Format(time.RFC3339Nano),
+		"state":       json.RawMessage(state),
+	})
+}
+
+func (s *Service) handleDebugOpenPopupTab(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.URL) == "" {
+		writeError(w, http.StatusBadRequest, "url is required", nil)
+		return
 	}
 
-	ordered := azuretls.OrderedHeaders{}
-	seen := map[string]bool{}
-	appendHeader := func(name, value string) {
-		name = strings.ToLower(strings.TrimSpace(name))
-		value = strings.TrimSpace(value)
-		if name == "" || value == "" || seen[name] {
-			return
-		}
-		seen[name] = true
-		ordered = append(ordered, []string{name, value})
-	}
-
-	if capture != nil {
-		for _, h := range capture.Headers {
-			name := strings.ToLower(strings.TrimSpace(h.Name))
-			switch name {
-			case "", "authorization", "user-agent", "host", "content-length", "connection":
-				continue
-			}
-			appendHeader(name, h.Value)
-		}
-	}
-
-	appendHeader("accept", "application/json, text/plain, */*")
-	appendHeader("accept-language", "en-US,en;q=0.9")
-	appendHeader("x-client-version", internalClientVersion)
-	appendHeader("x-browser-info", browserInfo)
-	appendHeader("origin", frontendOrigin)
-	appendHeader("referer", frontendReferer)
-	appendHeader("authorization", tokenType+" "+token.AccessToken)
-	return ordered
+	clientCount := s.broadcastOpenTab(body.URL)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "url": body.URL, "clients": clientCount})
 }
 
 func (s *Service) handleStudies(w http.ResponseWriter, r *http.Request) {
@@ -685,84 +606,4 @@ func (s *Service) handleStudies(w http.ResponseWriter, r *http.Request) {
 			"source": "cache",
 		},
 	})
-}
-
-func (s *Service) handleStudiesForceRefresh(w http.ResponseWriter, r *http.Request) {
-	token, capture, targetURL, err := s.resolveStudiesRefreshInputs()
-	if err != nil {
-		if strings.Contains(err.Error(), "not authenticated") {
-			writeError(w, http.StatusUnauthorized, err.Error(), nil)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to prepare studies refresh inputs", err)
-		return
-	}
-
-	acquired, retryAfter := s.acquireUpstreamRefreshSlot(defaultUpstreamRefreshMinGap)
-	if !acquired {
-		retryAfterSeconds := int(retryAfter / time.Second)
-		if retryAfter%time.Second != 0 {
-			retryAfterSeconds++
-		}
-		if retryAfterSeconds < 1 {
-			retryAfterSeconds = 1
-		}
-		writeJSON(w, http.StatusTooManyRequests, map[string]any{
-			"error":               "refresh guard active",
-			"retry_after_seconds": retryAfterSeconds,
-		})
-		return
-	}
-	defer s.releaseUpstreamRefreshSlot()
-
-	session := azuretls.NewSession()
-	defer session.Close()
-
-	resp, err := session.Get(targetURL, buildStudiesHeaders(token, capture), 30*time.Second)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "request to prolific failed", err)
-		return
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		if err := s.markStudiesRefresh(StudiesRefreshUpdate{
-			ObservedAt: time.Now().UTC(),
-			Source:     "service.studies_refresh",
-			URL:        targetURL,
-			StatusCode: resp.StatusCode,
-		}); err != nil {
-			logWarn("studies.refresh.persist_state_failed", "source", "service.studies_refresh", "error", err)
-		}
-		writePassthroughResponse(w, resp.StatusCode, resp.Header.Get("Content-Type"), resp.Body)
-		return
-	}
-
-	observedAt := time.Now().UTC()
-	normalizedBody, availability, err := s.ingestStudiesPayload(resp.Body, observedAt, "service.studies_refresh", targetURL, resp.StatusCode)
-	if err != nil {
-		logWarn("studies.normalize_failed", "source", "service.studies_refresh", "error", err)
-		writePassthroughResponse(w, resp.StatusCode, resp.Header.Get("Content-Type"), resp.Body)
-		return
-	}
-
-	response := map[string]any{
-		"results": normalizedBody.Results,
-		"_links":  normalizedBody.Links,
-		"meta":    normalizedBody.Meta,
-	}
-	if availability != nil {
-		response["changes"] = availability
-	}
-
-	logInfo("studies.refresh.forced", "count", len(normalizedBody.Results), "target", targetURL, "observed_at", observedAt)
-	writeJSON(w, http.StatusOK, response)
-}
-
-func writePassthroughResponse(w http.ResponseWriter, statusCode int, contentType string, body []byte) {
-	if contentType == "" {
-		contentType = "application/json"
-	}
-	w.Header().Set("Content-Type", contentType)
-	w.WriteHeader(statusCode)
-	_, _ = w.Write(body)
 }

@@ -28,137 +28,17 @@ var submissionStatusPhase = map[string]string{
 	"RETURNED":        SubmissionPhaseSubmitted,
 }
 
-type TokenStore struct{ db *sql.DB }
-
-type StudiesHeaderStore struct{ db *sql.DB }
-
 type ServiceStateStore struct{ db *sql.DB }
 
 type StudiesStore struct{ db *sql.DB }
 
 type SubmissionsStore struct{ db *sql.DB }
 
-func NewTokenStore(db *sql.DB) *TokenStore { return &TokenStore{db: db} }
-
-func NewStudiesHeaderStore(db *sql.DB) *StudiesHeaderStore { return &StudiesHeaderStore{db: db} }
-
 func NewServiceStateStore(db *sql.DB) *ServiceStateStore { return &ServiceStateStore{db: db} }
 
 func NewStudiesStore(db *sql.DB) *StudiesStore { return &StudiesStore{db: db} }
 
 func NewSubmissionsStore(db *sql.DB) *SubmissionsStore { return &SubmissionsStore{db: db} }
-
-func (s *TokenStore) Set(token StoredToken) error {
-	token.ReceivedAt = utcNowOr(token.ReceivedAt)
-	if token.TokenType == "" {
-		token.TokenType = "Bearer"
-	}
-
-	_, err := s.db.Exec(
-		`INSERT INTO token_state (id, access_token, token_type, storage_key, origin, browser_info, received_at)
-		 VALUES (1, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET
-		   access_token = excluded.access_token,
-		   token_type = excluded.token_type,
-		   storage_key = excluded.storage_key,
-		   origin = excluded.origin,
-		   browser_info = excluded.browser_info,
-		   received_at = excluded.received_at`,
-		token.AccessToken,
-		token.TokenType,
-		token.Key,
-		token.Origin,
-		token.BrowserInfo,
-		formatTime(token.ReceivedAt),
-	)
-	if err != nil {
-		return fmt.Errorf("save token: %w", err)
-	}
-	return nil
-}
-
-func (s *TokenStore) Get() (*StoredToken, error) {
-	row := s.db.QueryRow(
-		`SELECT access_token, token_type, storage_key, origin, browser_info, received_at
-		 FROM token_state
-		 WHERE id = 1`,
-	)
-
-	var token StoredToken
-	var receivedAt string
-	if err := row.Scan(&token.AccessToken, &token.TokenType, &token.Key, &token.Origin, &token.BrowserInfo, &receivedAt); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("load token: %w", err)
-	}
-
-	token.ReceivedAt = parseTime(receivedAt)
-	if token.TokenType == "" {
-		token.TokenType = "Bearer"
-	}
-	return &token, nil
-}
-
-func (s *TokenStore) Clear() error {
-	_, err := s.db.Exec(`DELETE FROM token_state WHERE id = 1`)
-	if err != nil {
-		return fmt.Errorf("clear token: %w", err)
-	}
-	return nil
-}
-
-func (s *StudiesHeaderStore) Set(capture StudiesHeadersCapture) error {
-	capture.CapturedAt = utcNowOr(capture.CapturedAt)
-	if capture.Method == "" {
-		capture.Method = "GET"
-	}
-
-	headersJSON, err := json.Marshal(capture.Headers)
-	if err != nil {
-		return fmt.Errorf("marshal captured headers: %w", err)
-	}
-
-	_, err = s.db.Exec(
-		`INSERT INTO studies_headers_state (id, url, method, headers_json, captured_at)
-		 VALUES (1, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET
-		   url = excluded.url,
-		   method = excluded.method,
-		   headers_json = excluded.headers_json,
-		   captured_at = excluded.captured_at`,
-		capture.URL,
-		capture.Method,
-		string(headersJSON),
-		formatTime(capture.CapturedAt),
-	)
-	if err != nil {
-		return fmt.Errorf("save studies headers: %w", err)
-	}
-	return nil
-}
-
-func (s *StudiesHeaderStore) Get() (*StudiesHeadersCapture, error) {
-	row := s.db.QueryRow(
-		`SELECT url, method, headers_json, captured_at
-		 FROM studies_headers_state
-		 WHERE id = 1`,
-	)
-
-	var capture StudiesHeadersCapture
-	var headersJSON, capturedAt string
-	if err := row.Scan(&capture.URL, &capture.Method, &headersJSON, &capturedAt); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("load studies headers: %w", err)
-	}
-	if err := json.Unmarshal([]byte(headersJSON), &capture.Headers); err != nil {
-		return nil, fmt.Errorf("parse studies headers: %w", err)
-	}
-	capture.CapturedAt = parseTime(capturedAt)
-	return &capture, nil
-}
 
 func (s *ServiceStateStore) SetStudiesRefresh(update StudiesRefreshUpdate) error {
 	observedAt := utcNowOr(update.ObservedAt)
