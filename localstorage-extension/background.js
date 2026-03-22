@@ -776,16 +776,29 @@ async function extractTokenFromTab(tabId) {
 // ---------------------------------------------------------------------------
 
 async function fetchStudiesInTab(tabId) {
+  // Prefer scripting mode: the request runs inside the Prolific tab's context,
+  // so it carries normal cookies/origin and is indistinguishable from the web
+  // app's own API calls. Fall back to background fetch only if scripting fails
+  // (tab navigating, dead context, etc.).
+  const scriptResult = await fetchStudiesInTabViaScripting(tabId);
+  if (scriptResult.ok) return scriptResult;
+
+  // Scripting failed — try background fetch with stored token
   const existing = await chrome.storage.local.get(STATE_KEY);
   const state = existing[STATE_KEY] || {};
   let accessToken = state.access_token;
   let tokenType = state.token_type || "Bearer";
 
   if (!accessToken) {
-    return fetchStudiesInTabViaScripting(tabId);
+    // No token and scripting failed — return the scripting error
+    return scriptResult;
   }
 
-  // Make fetch from background context
+  pushDebugLog("refresh.fetch_fallback_to_background", {
+    scripting_error: scriptResult.error,
+    tab_id: tabId
+  });
+
   const fetchURL = FETCH_STUDIES_API_URL + "?" + FETCH_STUDIES_EXT_MARKER + "=1";
   try {
     const resp = await fetch(fetchURL, {
