@@ -1,0 +1,98 @@
+handlers.go
+  194afe971cc3e172 135,252
+localstorage-extension/background.js
+  194afe971cc3e172 56
+api_errors.go
+  194afe971cc3e172 14,18,22
+ingest_processors.go
+  194afe971cc3e172 44,86,127
+.gitignore
+  194afe971cc3e172 1,44
+tests-wdio/helpers/constants.js
+  194afe971cc3e172 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "d280ca5d22d733dea6a668607e4690bcfd87edce",
+  "prompts": {
+    "194afe971cc3e172": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "760b9d02-2271-4424-80f7-e11e6463d492",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 27,
+      "total_deletions": 141,
+      "accepted_lines": 13,
+      "overriden_lines": 0
+    },
+    "32e8627f166e8560": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53914a92-301e-453d-b724-7652dda426fd",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "681034032b51c79b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "18c6e356-f523-49a3-b7c4-dabc15186df3",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 402,
+      "overriden_lines": 0
+    },
+    "da92bb89794e7bf5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019cb032-05c8-7fb3-b40a-d38b0f5e25f8",
+        "model": "gpt-5.3-codex"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 973,
+      "overriden_lines": 0
+    },
+    "e62f05d2c266eeb2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2cabdfcb-c6f1-488d-bd4f-16be86d82a3e",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 269,
+      "overriden_lines": 0
+    },
+    "f713db0f41422063": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fb07ad0f-31ae-45c7-846c-2e0a2393b387",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 565,
+      "overriden_lines": 0
+    }
+  }
+}
