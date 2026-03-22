@@ -1,0 +1,166 @@
+tests-wdio/wdio.conf.js
+  194afe971cc3e172 1-121
+tests-wdio/specs/05-settings.js
+  194afe971cc3e172 1-35
+tests-wdio/package.json
+  194afe971cc3e172 1-18
+tests-wdio/helpers/go-server.js
+  194afe971cc3e172 1-65
+tests-wdio/specs/07-debug-state.js
+  194afe971cc3e172 1-37
+tests-wdio/setup-login.js
+  194afe971cc3e172 1-117
+tests-wdio/specs/04-server-reconnect.js
+  194afe971cc3e172 1-45
+studies_url.go
+  c7a1129c66fb06ae 17
+service.go
+  681034032b51c79b 4,18-20,45
+  f713db0f41422063 46
+tests-wdio/helpers/server-api.js
+  194afe971cc3e172 1-41
+tests-wdio/specs/03-popup-tabs.js
+  194afe971cc3e172 1-43
+main.go
+  c7a1129c66fb06ae 20
+tests-wdio/helpers/popup-dom.js
+  194afe971cc3e172 1-69
+http_helpers.go
+  c7a1129c66fb06ae 27
+tests-wdio/helpers/auth.js
+  194afe971cc3e172 1-101
+tests-wdio/helpers/constants.js
+  194afe971cc3e172 1-25
+localstorage-extension/background.js
+  c7a1129c66fb06ae 143-157,775-779,784,793-795,797-798,809-812,814,818-821,825-826,829-830,832-834,847-860,864-868,873-889,891-955,958-995,998-1061,1063-1095,1706-1707,1726,2029-2030,2067-2068,2198-2200,2617-2618
+  32e8627f166e8560 717,728,768-771,780-783,785-792,796,799-808,817,824,828,836-837,839-846,863,869-872,1730-1732,1774-1776
+  681034032b51c79b 31,50-52,235,1110-1145,1286
+  f713db0f41422063 56-57,1314-1336
+localstorage-extension/manifest.json
+  681034032b51c79b 39-43
+tests-wdio/specs/06-studies-intercept.js
+  194afe971cc3e172 1-76
+.gitignore
+  e62f05d2c266eeb2 45-50
+  194afe971cc3e172 4,11,51-53
+tests-wdio/helpers/popup-settings.js
+  194afe971cc3e172 1-37
+CLAUDE.md
+  194afe971cc3e172 40-42,44-45,49,51-53,55,58,63-69,78-80
+  f713db0f41422063 61
+  681034032b51c79b 1-39,43,46-48,50,54,56-57,59-60,62,70-77,81
+tests-wdio/specs/01-server-health.js
+  194afe971cc3e172 1-20
+api_errors.go
+  c7a1129c66fb06ae 14-15,18-19,22-23
+handlers.go
+  681034032b51c79b 558-562,564-566,569-574
+  f713db0f41422063 576-582,585-586
+models.go
+  c7a1129c66fb06ae 22
+tests-wdio/helpers/extension.js
+  194afe971cc3e172 1-23
+tests-wdio/specs/02-popup-display.js
+  194afe971cc3e172 1-36
+ws.go
+  f713db0f41422063 28,273-288
+  681034032b51c79b 26,222-223,255-272
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "417d2f337606a738a76dd866ebb6c0d78aa515c8",
+  "prompts": {
+    "194afe971cc3e172": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "760b9d02-2271-4424-80f7-e11e6463d492",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 1071,
+      "total_deletions": 155,
+      "accepted_lines": 935,
+      "overriden_lines": 0
+    },
+    "32e8627f166e8560": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53914a92-301e-453d-b724-7652dda426fd",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 816,
+      "total_deletions": 566,
+      "accepted_lines": 213,
+      "overriden_lines": 0
+    },
+    "681034032b51c79b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "18c6e356-f523-49a3-b7c4-dabc15186df3",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 869,
+      "total_deletions": 391,
+      "accepted_lines": 556,
+      "overriden_lines": 0
+    },
+    "c7a1129c66fb06ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5008bf8e-c2f6-432c-9070-ac76945933fd",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 503,
+      "total_deletions": 796,
+      "accepted_lines": 433,
+      "overriden_lines": 4
+    },
+    "da92bb89794e7bf5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019cb032-05c8-7fb3-b40a-d38b0f5e25f8",
+        "model": "gpt-5.3-codex"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 973,
+      "overriden_lines": 0
+    },
+    "e62f05d2c266eeb2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2cabdfcb-c6f1-488d-bd4f-16be86d82a3e",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 855,
+      "total_deletions": 263,
+      "accepted_lines": 275,
+      "overriden_lines": 3
+    },
+    "f713db0f41422063": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fb07ad0f-31ae-45c7-846c-2e0a2393b387",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>",
+      "messages": [],
+      "total_additions": 839,
+      "total_deletions": 487,
+      "accepted_lines": 622,
+      "overriden_lines": 0
+    }
+  }
+}
