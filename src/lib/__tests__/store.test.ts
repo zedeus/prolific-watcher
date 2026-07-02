@@ -720,3 +720,75 @@ describe('getResearcherStudyData', () => {
     expect(data.availabilityEvents).toEqual([]);
   });
 });
+
+// --- Study-history insights + retention (issue #19) ---
+
+describe('getStudyInsights', () => {
+  it('computes insights from stored history + events', async () => {
+    await db.studiesHistory.bulkAdd([
+      { study_id: 's1', observed_at: '2026-03-01T10:00:00Z', payload: { name: 'Bumpy', reward: { amount: 500, currency: 'GBP' }, researcher: { id: 'r1', name: 'Lab' } } },
+      { study_id: 's1', observed_at: '2026-03-01T12:00:00Z', payload: { name: 'Bumpy', reward: { amount: 900, currency: 'GBP' }, researcher: { id: 'r1', name: 'Lab' } } },
+    ]);
+    await db.studyAvailabilityEvents.bulkAdd([
+      { study_id: 's1', study_name: 'Bumpy', event_type: 'available', observed_at: '2026-03-01T10:00:00Z' },
+      { study_id: 's1', study_name: 'Bumpy', event_type: 'unavailable', observed_at: '2026-03-01T10:30:00Z' },
+    ]);
+    const insights = await store.getStudyInsights();
+    expect(insights.empty).toBe(false);
+    expect(insights.price_changes[0].direction).toBe('up');
+    expect(insights.price_changes[0].study_name).toBe('Bumpy');
+    expect(insights.fill_speed.sample).toBe(1);
+    expect(insights.posting.total_postings).toBe(1);
+  });
+
+  it('reports empty when nothing is stored', async () => {
+    const insights = await store.getStudyInsights();
+    expect(insights.empty).toBe(true);
+  });
+
+  it('tolerates malformed history / event rows in the DB', async () => {
+    await db.studiesHistory.bulkAdd([
+      { study_id: 's1', observed_at: '2026-03-01T10:00:00Z', payload: null as unknown as Record<string, unknown> },
+      { study_id: 's1', observed_at: '2026-03-01T11:00:00Z', payload: { reward: 'nope' } as unknown as Record<string, unknown> },
+      { study_id: '', observed_at: 'not-a-date', payload: {} },
+    ]);
+    await db.studyAvailabilityEvents.bulkAdd([
+      { study_id: 's1', study_name: 'X', event_type: 'available', observed_at: 'not-a-date' },
+      { study_id: 's1', study_name: 'X', event_type: 'unavailable', observed_at: '2026-03-01T11:00:00Z' },
+    ]);
+    const insights = await store.getStudyInsights();
+    expect(insights).toBeTruthy();
+    expect(insights.empty).toBe(true);
+  });
+});
+
+describe('pruneStudyHistory', () => {
+  const at = (h: number) => `2026-03-01T${String(h).padStart(2, '0')}:00:00Z`;
+
+  it('drops strictly-redundant interior snapshots, keeping endpoints + change-points', async () => {
+    await db.studiesHistory.bulkAdd([
+      { study_id: 's1', observed_at: at(1), payload: { reward: { amount: 500, currency: 'GBP' }, places_available: 5 } }, // kept (first)
+      { study_id: 's1', observed_at: at(2), payload: { reward: { amount: 500, currency: 'GBP' }, places_available: 5 } }, // redundant (interior)
+      { study_id: 's1', observed_at: at(3), payload: { reward: { amount: 500, currency: 'GBP' }, places_available: 5 } }, // redundant (interior)
+      { study_id: 's1', observed_at: at(4), payload: { reward: { amount: 500, currency: 'GBP' }, places_available: 5 } }, // kept (last of run before change)
+      { study_id: 's1', observed_at: at(5), payload: { reward: { amount: 800, currency: 'GBP' }, places_available: 5 } }, // change-point
+      { study_id: 's1', observed_at: at(6), payload: { reward: { amount: 800, currency: 'GBP' }, places_available: 5 } }, // kept (last)
+    ]);
+    const deleted = await store.pruneStudyHistory(new Date('2026-03-02T00:00:00Z'));
+    expect(deleted).toBe(2);
+    expect(await db.studiesHistory.where('study_id').equals('s1').count()).toBe(4);
+  });
+
+  it('drops snapshots older than the retention window (age backstop)', async () => {
+    const now = new Date('2026-06-01T00:00:00Z');
+    const old = new Date(now.getTime() - 200 * 86_400_000).toISOString();
+    const recent = new Date(now.getTime() - 86_400_000).toISOString();
+    await db.studiesHistory.bulkAdd([
+      { study_id: 's1', observed_at: old, payload: { reward: { amount: 500, currency: 'GBP' } } },
+      { study_id: 's1', observed_at: recent, payload: { reward: { amount: 500, currency: 'GBP' } } },
+    ]);
+    await store.pruneStudyHistory(now);
+    const remaining = await db.studiesHistory.toArray();
+    expect(remaining.map((r) => r.observed_at)).toEqual([recent]);
+  });
+});

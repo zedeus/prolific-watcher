@@ -136,6 +136,25 @@ export const DEFAULT_REFRESH_INTERVAL_MS = 60_000;
 export const REACTIVE_REFRESH_DEBOUNCE_MS = 150;
 export const PRIORITY_FILTER_PERSIST_DEBOUNCE_MS = 250;
 
+// ─── Study-history insights ──────────────────────────────────
+/** Hard cap on rows loaded for the Insights view (most-recent first). Compaction keeps this ample. */
+export const INSIGHTS_MAX_HISTORY_ROWS = 20_000;
+export const INSIGHTS_MAX_EVENTS = 5_000;
+/** How many price moves / reruns / fastest fillers the Insights panel shows per section. */
+export const INSIGHTS_SECTION_LIMIT = 6;
+/**
+ * Retention: studiesHistory records a full snapshot every refresh, so it grows without bound. We
+ * compact it by dropping strictly-redundant consecutive snapshots (see redundantHistoryRowIds) and,
+ * as a far backstop, drop anything older than the retention window.
+ */
+export const STUDY_HISTORY_RETENTION_DAYS = 120;
+/**
+ * How often the background history-compaction alarm fires. Hourly keeps the raw (un-compacted) table
+ * well under INSIGHTS_MAX_HISTORY_ROWS between passes even for a busy feed, so the Insights read never
+ * evicts a study's baseline snapshot. The pass itself is cheap (a bounded scan + bulk delete).
+ */
+export const STUDY_HISTORY_PRUNE_PERIOD_MINUTES = 60;
+
 // ─── Earnings analytics ──────────────────────────────────────
 export const EARNINGS_PREFS_KEY = 'earningsPrefs';
 export const DEFAULT_EARNINGS_INCLUDE_PENDING = true;

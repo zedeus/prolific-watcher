@@ -4,7 +4,7 @@
     onTabChange: (tab: string) => void;
   }>();
 
-  const tabs = ['live', 'feed', 'submissions', 'researchers', 'earnings', 'settings'] as const;
+  const tabs = ['live', 'feed', 'submissions', 'researchers', 'earnings', 'insights', 'settings'] as const;
 
   function tabLabel(tab: string): string {
     return tab.charAt(0).toUpperCase() + tab.slice(1);
@@ -15,7 +15,7 @@
   {#each tabs as tab (tab)}
     <button
       id="tab{tab.charAt(0).toUpperCase() + tab.slice(1)}"
-      class="flex-1 border-b-2 bg-transparent text-base-content/50 text-sm font-semibold leading-none py-2.5 cursor-pointer text-center transition-colors duration-100 hover:text-base-content/70 {activeTab === tab ? 'tab-active !text-primary !border-primary' : 'border-transparent'}"
+      class="flex-1 min-w-0 border-b-2 bg-transparent text-base-content/50 text-xs font-semibold leading-none py-2.5 px-0.5 cursor-pointer text-center transition-colors duration-100 hover:text-base-content/70 {activeTab === tab ? 'tab-active !text-primary !border-primary' : 'border-transparent'}"
       type="button"
       data-tab={tab}
       role="tab"

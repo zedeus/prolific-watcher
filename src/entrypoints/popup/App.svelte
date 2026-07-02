@@ -57,6 +57,7 @@
 
   import { filterSubmissionsByResearcher } from '../../lib/submission-analytics';
   import { computeResearcherProfile, computeCompactProfiles, type ResearcherProfile } from '../../lib/researcher-profile';
+  import type { StudyHistoryInsights } from '../../lib/study-history';
 
   import StatusBar from './components/StatusBar.svelte';
   import TabBar from './components/TabBar.svelte';
@@ -65,6 +66,7 @@
   import SubmissionsPanel from './components/SubmissionsPanel.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
   import ResearchersPanel from './components/ResearchersPanel.svelte';
+  import InsightsPanel from './components/InsightsPanel.svelte';
   import ResearcherProfileCard from './components/ResearcherProfileCard.svelte';
 
   // EarningsPanel pulls in ~600 kB of layerchart + d3-scale. Lazy-load it on
@@ -99,6 +101,12 @@
   // study_id → study-type label, loaded once per popup open (types are stable within a session).
   let studyTypeMap: Map<string, string> = $state(new Map());
   let focusFilterId = $state('');
+
+  // Study-history insights (issue #19) — loaded on demand when the Insights tab is opened, since the
+  // history/event tables can be large. Kept as the compact computed view-model, not the raw rows.
+  let studyInsights: StudyHistoryInsights | null = $state(null);
+  let insightsError = $state(false);
+  let insightsLoadInFlight = false;
 
   // Researcher reliability profile (opened by clicking a researcher name / the study action menu).
   let profileResearcherId = $state('');
@@ -690,6 +698,22 @@
   function handleTabChange(tab: string) {
     activeTab = tab;
     if (tab === 'earnings') loadEarningsPanel();
+    if (tab === 'insights') void loadInsights();
+  }
+
+  async function loadInsights() {
+    if (insightsLoadInFlight || isAuthRequired) return;
+    insightsLoadInFlight = true;
+    insightsError = false;
+    try {
+      // Overwrite in place so re-opening the tab refreshes without flashing the spinner.
+      studyInsights = await store.getStudyInsights();
+    } catch {
+      // Surface an error state rather than spinning forever (studyInsights stays null on first failure).
+      insightsError = true;
+    } finally {
+      insightsLoadInFlight = false;
+    }
   }
 
   async function handleEarningsPrefsChange(prefs: EarningsPrefs) {
@@ -803,6 +827,13 @@
   {:else}
     <div id="panelEarnings" class="panel" class:active={activeTab === 'earnings'}></div>
   {/if}
+  <InsightsPanel
+    active={activeTab === 'insights'}
+    insights={studyInsights}
+    error={insightsError}
+    overrideMessage={showPanelOverride ? panelOverrideText : ''}
+    onStudyClick={handleStudyClick}
+  />
   {#if settingsLoaded}
   <SettingsPanel
     active={activeTab === 'settings'}

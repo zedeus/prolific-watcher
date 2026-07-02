@@ -1,7 +1,8 @@
 import type { SubmissionRecord, StudyAvailabilityEventRecord, ResearcherRecord } from './db';
 import type { Study } from './types';
-import { parseDate, trimString } from './format';
+import { trimString } from './format';
 import { categorizeStatus, researcherRefFromPayload } from './submission-analytics';
+import { firstListingDurationSeconds } from './study-history';
 import {
   extractSubmissionReward,
   extractDurationSeconds,
@@ -304,23 +305,6 @@ export function computeStudyContext(
     median_listing_seconds: durations.length > 0 ? quantile(durations, 0.5) : null,
     listing_sample: durations.length,
   };
-}
-
-/** Seconds between a study's first `available` event and the next `unavailable` after it. null if unpaired. */
-function firstListingDurationSeconds(events: StudyAvailabilityEventRecord[]): number | null {
-  const sorted = [...events].sort((a, b) => a.observed_at.localeCompare(b.observed_at));
-  let availableAt: Date | null = null;
-  for (const e of sorted) {
-    if (e.event_type === 'available') {
-      if (!availableAt) availableAt = parseDate(e.observed_at);
-    } else if (e.event_type === 'unavailable' && availableAt) {
-      const closedAt = parseDate(e.observed_at);
-      if (!closedAt) return null;
-      const secs = (closedAt.getTime() - availableAt.getTime()) / 1000;
-      return secs > 0 ? secs : null;
-    }
-  }
-  return null;
 }
 
 // ──────────────────────────────────────────────────────────────

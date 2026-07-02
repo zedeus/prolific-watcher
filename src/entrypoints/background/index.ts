@@ -26,6 +26,7 @@ import {
   STUDIES_REFRESH_AVERAGE_DELAY_SECONDS_KEY,
   STUDIES_REFRESH_SPREAD_SECONDS_KEY,
   STUDIES_REFRESH_CYCLE_SECONDS,
+  STUDY_HISTORY_PRUNE_PERIOD_MINUTES,
   DEFAULT_STUDIES_REFRESH_MIN_DELAY_SECONDS,
   DEFAULT_STUDIES_REFRESH_AVERAGE_DELAY_SECONDS,
   DEFAULT_STUDIES_REFRESH_SPREAD_SECONDS,
@@ -2137,6 +2138,15 @@ export default defineBackground({
     function schedule(): void {
       browser.alarms.create('oidc_sync', { periodInMinutes: 1 });
       pushDebugLog('alarm.scheduled', { name: 'oidc_sync', period_minutes: 1 });
+      // Periodic studiesHistory compaction — decoupled from the ingest hot path. Create it ONLY if it
+      // doesn't already exist: schedule() runs on every event-page/service-worker cold start (which
+      // oidc_sync triggers ~1×/min), and re-creating an alarm resets its countdown — so recreating a
+      // long-period alarm every wake would starve it and it would never fire.
+      void browser.alarms.get('history_prune').then((existing) => {
+        if (existing) return;
+        browser.alarms.create('history_prune', { periodInMinutes: STUDY_HISTORY_PRUNE_PERIOD_MINUTES });
+        pushDebugLog('alarm.scheduled', { name: 'history_prune', period_minutes: STUDY_HISTORY_PRUNE_PERIOD_MINUTES });
+      });
     }
 
     function registerCaptureListeners(): void {
@@ -2382,6 +2392,9 @@ export default defineBackground({
       if (alarm.name === 'oidc_sync') {
         pushDebugLog('alarm.fired', { name: alarm.name });
         requestTokenSync('alarm');
+      } else if (alarm.name === 'history_prune') {
+        // Best-effort maintenance — log failures to diagnostics instead of dying silently.
+        void store.pruneStudyHistory().catch((error) => pushDebugLog('history_prune.error', { error: stringifyError(error) }));
       }
     });
 

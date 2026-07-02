@@ -1,5 +1,5 @@
 import type { Study, Money } from '../types';
-import type { StudyLatestRecord, StudyActiveSnapshotRecord, ResearcherRecord, StudyAvailabilityEventRecord } from '../db';
+import type { StudyLatestRecord, StudyActiveSnapshotRecord, ResearcherRecord, StudyAvailabilityEventRecord, StudyHistoryRecord } from '../db';
 import { db } from '../db';
 import { makeRng, pick } from './rng';
 import { STATE_KEY } from '../constants';
@@ -138,21 +138,120 @@ function buildResearcherRecords(now: Date): ResearcherRecord[] {
   }));
 }
 
-// Give ~65% of studies an available→unavailable pair so the profile "typically listed" / fill-speed
-// metric has something to aggregate; the rest stay open (still-listed).
-function buildAvailabilityEvents(studies: Study[], now: Date): Omit<StudyAvailabilityEventRecord, 'row_id'>[] {
-  const rng = makeRng(99);
+// Days of study-history/event timeline to fabricate behind "now".
+const HISTORY_WINDOW_DAYS = 8;
+const SNAPSHOT_INTERVAL_MS = 3 * 60 * 60 * 1000; // mirror ~a refresh cadence, collapsed
+// Posting cadence peaks in the daytime so the Insights "best times" chart shows a clear shape.
+const HOUR_WEIGHTS = [
+  0.3, 0.2, 0.15, 0.15, 0.2, 0.4, 0.8, 1.6, 2.6, 3.4, 4.0, 3.8, // 0..11
+  3.4, 3.6, 3.9, 3.7, 3.0, 2.4, 2.0, 1.7, 1.4, 1.1, 0.8, 0.5, // 12..23
+];
+
+function pickHour(rng: () => number): number {
+  const total = HOUR_WEIGHTS.reduce((a, b) => a + b, 0);
+  let r = rng() * total;
+  for (let h = 0; h < 24; h++) {
+    r -= HOUR_WEIGHTS[h];
+    if (r <= 0) return h;
+  }
+  return 12;
+}
+
+/** A past instant at a given local hour, N days ago — local constructor keeps the hour TZ-stable. */
+function pastLocal(now: Date, daysAgo: number, hour: number, rng: () => number): Date {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, hour, Math.floor(rng() * 60), 0, 0);
+}
+
+/** A study snapshot payload with a given reward + remaining places (mirrors the real history shape). */
+function snapshotPayload(study: Study, rewardMinor: number, placesAvailable: number): Record<string, unknown> {
+  const durationMin = Number(study.estimated_completion_time) || 10;
+  const hourly = Math.round((rewardMinor / durationMin) * 60);
+  return {
+    ...study,
+    reward: { amount: rewardMinor, currency: study.reward.currency },
+    average_reward_per_hour: { amount: hourly, currency: study.reward.currency },
+    places_available: placesAvailable,
+  };
+}
+
+interface Cycle {
+  start: Date;
+  end: Date | null; // null = still listed
+}
+
+interface StudyActivity {
+  events: Omit<StudyAvailabilityEventRecord, 'row_id'>[];
+  history: Omit<StudyHistoryRecord, 'row_id'>[];
+}
+
+/**
+ * Fabricate a study-history + availability-event timeline rich enough to exercise every Insights
+ * analysis: fill speed (closed listings), posting cadence (daytime-biased `available` times), price
+ * moves (reward bumps/cuts on long-lived studies), and reruns (studies re-listed on a schedule).
+ * Deterministic given the seed.
+ */
+function buildStudyActivity(studies: Study[], now: Date, seed: number): StudyActivity {
+  const rng = makeRng(seed + 7);
   const events: Omit<StudyAvailabilityEventRecord, 'row_id'>[] = [];
-  for (const s of studies) {
-    const availableAt = s.first_seen_at || now.toISOString();
-    events.push({ study_id: s.id, study_name: s.name, event_type: 'available', observed_at: availableAt });
-    if (rng() < 0.65) {
-      const listedMinutes = Math.round(5 + rng() * 175);
-      const closedAt = new Date(new Date(availableAt).getTime() + listedMinutes * 60_000).toISOString();
-      events.push({ study_id: s.id, study_name: s.name, event_type: 'unavailable', observed_at: closedAt });
+  const history: Omit<StudyHistoryRecord, 'row_id'>[] = [];
+
+  for (let idx = 0; idx < studies.length; idx++) {
+    const s = studies[idx];
+    const baseReward = s.reward.amount;
+    const totalPlaces = s.total_available_places || 50;
+
+    const cycles: Cycle[] = [];
+    let changeAtMs = Infinity;
+    let bumpedReward = baseReward;
+
+    if (idx % 5 === 0) {
+      // Regular rerun: 3–4 near-daily listings at a stable local hour → flagged "scheduled".
+      // Anchor reruns in the working day (9am–4pm) so their concentrated postings reinforce — rather
+      // than fight — the daytime posting-cadence peak in the seeded demo.
+      const count = 3 + Math.floor(rng() * 2);
+      const hour = 9 + Math.floor(rng() * 8);
+      for (let c = count - 1; c >= 0; c--) {
+        const start = pastLocal(now, c, hour, rng);
+        const listedMin = 25 + Math.floor(rng() * 90);
+        const stillLive = c === 0 && rng() < 0.4;
+        cycles.push({ start, end: stillLive ? null : new Date(start.getTime() + listedMin * 60_000) });
+      }
+    } else if (idx % 5 === 1) {
+      // Long-lived (listed 6–8 days ago, still listed), with one reward change partway → a price move.
+      // Anchored to a daytime hour (like reruns/normal) so the posting-cadence peak is daytime and
+      // timezone-independent, instead of drifting with the absolute seed time.
+      const start = pastLocal(now, 6 + Math.floor(rng() * 2), pickHour(rng), rng);
+      cycles.push({ start, end: null });
+      const dir = rng() < 0.6 ? 1 : -1;
+      const frac = 0.15 + rng() * 0.3;
+      bumpedReward = Math.max(50, Math.round(baseReward * (1 + dir * frac)));
+      changeAtMs = start.getTime() + (0.4 + rng() * 0.2) * (now.getTime() - start.getTime());
+    } else {
+      // Normal single listing somewhere in the window; some fill fast, ~40% still live.
+      const daysAgo = Math.floor(rng() * HISTORY_WINDOW_DAYS);
+      const start = pastLocal(now, daysAgo, pickHour(rng), rng);
+      const fast = idx % 7 === 3;
+      const listedMin = fast ? 3 + Math.floor(rng() * 12) : 25 + Math.floor(rng() * 150);
+      const stillLive = daysAgo === 0 && rng() < 0.4;
+      cycles.push({ start, end: stillLive ? null : new Date(start.getTime() + listedMin * 60_000) });
+    }
+
+    for (const cy of cycles) {
+      events.push({ study_id: s.id, study_name: s.name, event_type: 'available', observed_at: cy.start.toISOString() });
+      const end = cy.end ? cy.end.getTime() : now.getTime();
+      let placesLeft = totalPlaces;
+      for (let t = cy.start.getTime(); t <= end; t += SNAPSHOT_INTERVAL_MS) {
+        const rewardAt = t >= changeAtMs ? bumpedReward : baseReward;
+        placesLeft = Math.max(0, placesLeft - Math.round(rng() * 2));
+        history.push({ study_id: s.id, observed_at: new Date(t).toISOString(), payload: snapshotPayload(s, rewardAt, placesLeft) });
+      }
+      if (cy.end) {
+        events.push({ study_id: s.id, study_name: s.name, event_type: 'unavailable', observed_at: cy.end.toISOString() });
+      }
     }
   }
-  return events;
+
+  return { events, history };
 }
 
 export async function seedFakeStudies(count: number, seed = 42): Promise<number> {
@@ -174,14 +273,17 @@ export async function seedFakeStudies(count: number, seed = 42): Promise<number>
     last_seen_at: now,
   }));
 
+  const activity = buildStudyActivity(studies, nowDate, seed);
+
   await db.transaction(
     'rw',
-    [db.studiesLatest, db.studiesActiveSnapshot, db.serviceState, db.researchers, db.studyAvailabilityEvents],
+    [db.studiesLatest, db.studiesActiveSnapshot, db.serviceState, db.researchers, db.studyAvailabilityEvents, db.studiesHistory],
     async () => {
       await db.studiesLatest.bulkPut(latestRecords);
       await db.studiesActiveSnapshot.bulkPut(snapshotRecords);
       await db.researchers.bulkPut(buildResearcherRecords(nowDate));
-      await db.studyAvailabilityEvents.bulkAdd(buildAvailabilityEvents(studies, nowDate));
+      await db.studyAvailabilityEvents.bulkAdd(activity.events);
+      await db.studiesHistory.bulkAdd(activity.history);
       // Seed service state so the popup shows as "logged in"
       await db.serviceState.put({
         id: 1,
@@ -203,14 +305,34 @@ export async function seedFakeStudies(count: number, seed = 42): Promise<number>
   return studies.length;
 }
 
+/**
+ * Dev/test isolation only: wipe ALL study tables (not just the seeded fake rows). The visual specs
+ * share the persistent Prolific login profile, whose IndexedDB can hold real availability events
+ * captured by the e2e specs — those would otherwise leak into the seeded Insights demo. Never wired
+ * into production UI.
+ */
+export async function wipeStudyData(): Promise<void> {
+  await db.transaction(
+    'rw',
+    [db.studiesLatest, db.studiesActiveSnapshot, db.studyAvailabilityEvents, db.studiesHistory],
+    async () => {
+      await db.studiesLatest.clear();
+      await db.studiesActiveSnapshot.clear();
+      await db.studyAvailabilityEvents.clear();
+      await db.studiesHistory.clear();
+    },
+  );
+}
+
 export async function clearFakeStudies(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.studiesLatest, db.studiesActiveSnapshot, db.serviceState, db.researchers, db.studyAvailabilityEvents],
+    [db.studiesLatest, db.studiesActiveSnapshot, db.serviceState, db.researchers, db.studyAvailabilityEvents, db.studiesHistory],
     async () => {
       await db.studiesLatest.where('study_id').startsWith('study-fake-').delete();
       await db.studiesActiveSnapshot.where('study_id').startsWith('study-fake-').delete();
       await db.studyAvailabilityEvents.where('study_id').startsWith('study-fake-').delete();
+      await db.studiesHistory.where('study_id').startsWith('study-fake-').delete();
       await db.researchers.bulkDelete(RESEARCHERS.map((r) => r.id));
       // Clear service state to reset to "logged out"
       await db.serviceState.delete(1);

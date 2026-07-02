@@ -3,6 +3,13 @@ import { extractSubmissionReward, extractStartedAt } from './earnings';
 import { nowIso, trimString, formatStudyLabel } from './format';
 import { CSV_SUBMISSION_ID_PREFIX } from './import-csv';
 import { researcherRefFromPayload } from './submission-analytics';
+import { computeStudyHistoryInsights, redundantHistoryRowIds, type StudyHistoryInsights } from './study-history';
+import {
+  INSIGHTS_MAX_HISTORY_ROWS,
+  INSIGHTS_MAX_EVENTS,
+  INSIGHTS_SECTION_LIMIT,
+  STUDY_HISTORY_RETENTION_DAYS,
+} from './constants';
 import type {
   StudyLatestRecord,
   StudyActiveSnapshotRecord,
@@ -36,6 +43,38 @@ export async function setStudiesRefresh(update: StudiesRefreshUpdate): Promise<v
     last_studies_refresh_url: update.url,
     last_studies_refresh_status: update.status_code,
     updated_at: nowIso(),
+  });
+}
+
+// --- Study-history insights (issue #19) ---
+
+/**
+ * Load the study-history Insights view-model: price moves, fill speed, posting cadence, and reruns.
+ * Reads the most-recent slice of studiesHistory + availability events (bounded — compaction keeps the
+ * tables small) and computes everything in one pass so the popup holds only the compact result.
+ */
+export async function getStudyInsights(): Promise<StudyHistoryInsights> {
+  const [history, events] = await Promise.all([
+    db.studiesHistory.orderBy('row_id').reverse().limit(INSIGHTS_MAX_HISTORY_ROWS).toArray(),
+    db.studyAvailabilityEvents.orderBy('row_id').reverse().limit(INSIGHTS_MAX_EVENTS).toArray(),
+  ]);
+  return computeStudyHistoryInsights(history, events, { fastestLimit: INSIGHTS_SECTION_LIMIT });
+}
+
+/**
+ * Compact studiesHistory: drop snapshots older than the retention window, then drop strictly-redundant
+ * consecutive snapshots (unchanged reward/hourly/places between neighbours). Change-points and each
+ * study's endpoints are always kept, so analytics are unaffected. Returns rows deleted.
+ */
+export async function pruneStudyHistory(now: Date = new Date()): Promise<number> {
+  const cutoffIso = new Date(now.getTime() - STUDY_HISTORY_RETENTION_DAYS * 86_400_000).toISOString();
+  return db.transaction('rw', db.studiesHistory, async () => {
+    const aged = (await db.studiesHistory.where('observed_at').below(cutoffIso).primaryKeys()) as number[];
+    if (aged.length) await db.studiesHistory.bulkDelete(aged);
+    const remaining = await db.studiesHistory.toArray();
+    const redundant = redundantHistoryRowIds(remaining);
+    if (redundant.length) await db.studiesHistory.bulkDelete(redundant);
+    return aged.length + redundant.length;
   });
 }
 
