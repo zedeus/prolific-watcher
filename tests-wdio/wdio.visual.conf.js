@@ -33,6 +33,7 @@ export const config = {
     path.resolve('./specs/visual-live.js'),
     path.resolve('./specs/visual-researcher.js'),
     path.resolve('./specs/visual-insights.js'),
+    path.resolve('./specs/11-earnings-assertions.js'),
   ],
 
   capabilities: [{
