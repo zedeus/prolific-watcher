@@ -1,0 +1,77 @@
+src/lib/study-history.ts
+  s_59cfc767e9f36e::t_7845c2668eb07c 464-465,473-475,477-480,484,489-492,501
+  s_59cfc767e9f36e::t_0be9f322ce3f02 5
+  s_59cfc767e9f36e::t_d426df86ba614b 258-260
+  s_59cfc767e9f36e::t_d89a6b517c54e9 646-648
+  s_59cfc767e9f36e::t_9966b996122d31 680-684,692,698
+  s_59cfc767e9f36e::t_2a580a4373b381 225,227-228,244,248,261-262,264,267,278,293-296,299,305,315,319-320
+  s_59cfc767e9f36e::t_230c866261872e 644-645,649-652,659,662,666,673,675-679,685
+  s_59cfc767e9f36e::t_c0d705313a6d9b 96-98
+  s_59cfc767e9f36e::t_d7f719b9f27fbd 92-95,99-101
+  s_59cfc767e9f36e::t_c4fee4c051ec2e 129-130,135,138-144,149-150
+  s_59cfc767e9f36e::t_dc488263188dd3 251-254,276
+  s_59cfc767e9f36e::t_43cba1e81f1167 221
+  s_59cfc767e9f36e::t_abd7b56e18206d 83-91,102-128,131-134,136-137,145-148,151-163
+  s_59cfc767e9f36e::t_ed98081bd15cc7 281,285-289,291-292
+  s_59cfc767e9f36e::t_290fb744c1c57f 547,553-558
+  s_59cfc767e9f36e::t_e4e3711151252b 242,249-250,255-257,263,265-266,269-275,282-284,290,298,318,328
+src/lib/__dev__/fake-studies.ts
+  s_59cfc767e9f36e::t_506661ea44536d 181-190,198-237,239-243,247-251,254,256-257,259-267,269-282
+  s_59cfc767e9f36e::t_8e010cb11d41e5 142-146
+  s_59cfc767e9f36e::t_0bb7e164f24f41 328-333,340-380,382
+src/lib/__tests__/study-history.test.ts
+  s_59cfc767e9f36e::t_023b5b69722dd7 351-354,356-360,362,367-369
+  s_59cfc767e9f36e::t_e1863533b33c0e 13
+  s_59cfc767e9f36e::t_1e0e42ddc57004 387-417,436-464
+  s_59cfc767e9f36e::t_3cf5a17efaee0c 418-435
+src/lib/store.ts
+  s_59cfc767e9f36e::t_ee912076a9ae6a 243
+  s_59cfc767e9f36e::t_96a23478408093 6
+  s_59cfc767e9f36e::t_ad775a67e58605 231-232
+  s_59cfc767e9f36e::t_00a5e16231db08 260-265,267
+tests-wdio/wdio.chrome.conf.js
+  s_59cfc767e9f36e::t_169c861ab088ab 25-37
+  s_59cfc767e9f36e::t_f327b36e08d0e1 41-42,65
+  s_59cfc767e9f36e::t_71c27d87181f8c 57-61
+src/lib/researcher-profile.ts
+  s_59cfc767e9f36e::t_1584c9123deeec 5
+  s_59cfc767e9f36e::t_f1e4b2df4f48fc 105-106
+  s_59cfc767e9f36e::t_5cb26585e7a0c6 287,290-291
+  s_59cfc767e9f36e::t_6ff6f55cd7ff3a 313
+src/lib/__dev__/dev-helpers.ts
+  s_59cfc767e9f36e::t_15191f9920cd07 2,10,23
+src/entrypoints/popup/components/InsightsPanel.svelte
+  s_59cfc767e9f36e::t_c2ecedefc46e98 129-130
+  s_59cfc767e9f36e::t_bf4ae856e51062 101
+  s_59cfc767e9f36e::t_47a45684d7da58 91,94-96
+  s_59cfc767e9f36e::t_682b614f830285 89-90,92
+  s_59cfc767e9f36e::t_eb0957afd197ad 93
+src/lib/constants.ts
+  s_59cfc767e9f36e::t_b358fe56c59bca 140-148
+tests-wdio/specs/visual-insights.js
+  s_59cfc767e9f36e::t_8441a643cbd0a5 100-117
+src/entrypoints/popup/App.svelte
+  s_59cfc767e9f36e::t_9141a409c74d07 657
+src/lib/__tests__/researcher-profile.test.ts
+  s_59cfc767e9f36e::t_b079120d62c758 2,14
+  s_59cfc767e9f36e::t_27ee4187f74ffd 234-249
+src/lib/__tests__/store.test.ts
+  s_59cfc767e9f36e::t_395a5f5326e0a7 686-689
+  s_59cfc767e9f36e::t_ec4f21124f6c6b 731-736,738-742
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "ec5040f7fc7892c8491218276e5477368bf62c25",
+  "prompts": {},
+  "sessions": {
+    "s_59cfc767e9f36e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20995a8b-7b2c-4911-b357-1c20160efc2e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
