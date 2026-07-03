@@ -46,6 +46,11 @@ export const config = {
 
   capabilities: [{
     browserName: 'chrome',
+    // Use the classic WebDriver protocol. wdio v9 defaults to BiDi, but chromedriver's BiDi
+    // storage.setCookie rejects our injected Prolific cookies and floods every run with
+    // "BiDi setCookies failed, falling back to classic" warnings (two attempts per cookie). The
+    // extension specs only use classic commands, so enforcing classic is cleaner and faster.
+    'wdio:enforceWebDriverClassic': true,
     'goog:chromeOptions': {
       binary: findChromeBinary(),
       args: [

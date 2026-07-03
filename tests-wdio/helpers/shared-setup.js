@@ -7,10 +7,12 @@
  */
 
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { PROLIFIC_STUDIES_URL, POPUP_URL, WXT_SRC_DIR } from './constants.js';
 import { isLoggedIn, automatedLogin } from './auth.js';
+import { CHROME_EXTENSION_DIR } from './chrome-extension.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,7 +57,7 @@ export const SHARED_CONFIG = {
  * For Chrome, we derive it from the extension ID in capabilities or
  * fall back to polling the popup URL until it responds.
  */
-async function discoverPopupUrl(timeout = 30_000) {
+async function discoverPopupUrl() {
   const browserName = browser.capabilities?.browserName || 'firefox';
 
   if (browserName !== 'chrome') {
@@ -63,24 +65,22 @@ async function discoverPopupUrl(timeout = 30_000) {
     return POPUP_URL;
   }
 
-  // Chrome: need to discover the extension ID.
-  // Poll until the popup URL is reachable.
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    try {
-      // Try to get extension URL from Chrome's management API
-      const extUrl = await browser.execute(() => {
-        return typeof chrome !== 'undefined' && chrome.runtime
-          ? chrome.runtime.getURL('popup.html')
-          : null;
-      });
-      if (extUrl) return extUrl;
-    } catch { /* retry */ }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
+  // Chrome: the extension ID isn't known ahead of time (no manifest key), and `chrome.runtime` is not
+  // exposed in a page's MAIN world — so `browser.execute(() => chrome.runtime.getURL(...))` always
+  // returns null and the old code silently fell back to the *Firefox* moz-extension URL (blank in
+  // Chrome). For an unpacked extension Chrome derives the ID deterministically from the SHA-256 of the
+  // absolute load path, so we compute it directly (no CDP/service-worker timing to race).
+  return `chrome-extension://${chromeUnpackedExtensionId(CHROME_EXTENSION_DIR)}/popup.html`;
+}
 
-  // Fallback: use the popup URL from constants (Firefox-style)
-  return POPUP_URL;
+/**
+ * Compute the ID Chrome assigns to an unpacked extension loaded from `absPath`: SHA-256 the absolute
+ * path, take the first 16 bytes (32 hex nibbles), and map each nibble 0–f to a–p. Deterministic and
+ * matches Chrome's own algorithm, so the resulting chrome-extension://<id>/ URL is stable per path.
+ */
+export function chromeUnpackedExtensionId(absPath) {
+  const hex = crypto.createHash('sha256').update(absPath, 'utf8').digest('hex').slice(0, 32);
+  return hex.split('').map((nibble) => String.fromCharCode(97 + parseInt(nibble, 16))).join('');
 }
 
 /**

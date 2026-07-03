@@ -21,18 +21,41 @@ export function prepareChromeExtensionDir() {
 /**
  * Load Prolific session cookies into a Chrome WebDriver session.
  *
- * Prefers .chrome-cookies.json (saved by setup-login-chrome.py via nodriver)
- * which contains Chrome-native cookies that pass Cloudflare validation.
- * Falls back to extracting cookies from the Firefox profile's cookies.sqlite.
+ * Prefers a *fresh* .chrome-cookies.json (saved by setup-login-chrome.py via nodriver) which contains
+ * Chrome-native cookies that best pass Cloudflare validation. When that file is missing, unreadable,
+ * or STALE (its auth0 session cookies have expired), falls back to the live Firefox profile session —
+ * which is kept fresh by `node setup-login.js` and is what the Firefox e2e already uses — so a
+ * long-untouched Chrome cookie dump no longer silently breaks the whole Chrome run.
  *
  * Returns the number of cookies injected.
  */
 export async function loadCookiesForChrome(br) {
   const chromeCookies = path.join(__dirname, '..', '.chrome-cookies.json');
-  if (fs.existsSync(chromeCookies)) {
-    return injectCookiesFromJSON(br, chromeCookies);
+  if (fs.existsSync(chromeCookies) && !chromeCookiesAreStale(chromeCookies)) {
+    const injected = await injectCookiesFromJSON(br, chromeCookies);
+    if (injected > 0) return injected;
   }
   return injectCookiesFromFirefox(br);
+}
+
+/**
+ * A .chrome-cookies.json is stale when it carries no live auth0 session cookie — the `auth0`/
+ * `auth0_compat` cookies are what actually authenticate, so if they're absent or all expired the dump
+ * can't log us in and we should fall back to the Firefox session instead.
+ */
+function chromeCookiesAreStale(cookiesPath) {
+  try {
+    const cookies = JSON.parse(fs.readFileSync(cookiesPath, 'utf8'));
+    const nowSec = Date.now() / 1000;
+    const authCookies = cookies.filter((c) => /^auth0/.test(c.name || ''));
+    if (authCookies.length === 0) return true;
+    return authCookies.every((c) => {
+      const exp = Number(c.expires ?? c.expiry ?? 0);
+      return exp > 0 && exp < nowSec;
+    });
+  } catch {
+    return true;
+  }
 }
 
 async function injectCookiesFromJSON(br, cookiesPath) {
