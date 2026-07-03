@@ -6,9 +6,9 @@
  *   cd tests-wdio && node setup-login.js
  *
  * Opens a headed Firefox browser with the extension loaded.
- * Attempts automated login using credentials from .prolific-auth.
- * If automated login fails, waits for manual login.
- * Press Ctrl+C when done — the profile is saved automatically.
+ * Attempts automated login using credentials from .prolific-auth. If that succeeds (or the profile is
+ * already logged in) the script saves the session and exits on its own. Only when it needs a *manual*
+ * login does it keep the window open and wait for Ctrl+C.
  */
 
 import fs from 'node:fs';
@@ -87,23 +87,26 @@ async function main() {
 
     if (!url.includes(PROLIFIC_AUTH_HOST)) {
       console.log('Already logged in! Profile has a valid session.');
-      console.log('Press Ctrl+C to close the browser.');
-    } else {
-      if (!(await attemptLogin(br))) {
-        console.log();
-        console.log('Please log in manually in the browser window.');
-        console.log('Press Ctrl+C when done.');
-        console.log();
-      }
+    } else if (!(await attemptLogin(br))) {
+      // Only a manual login needs us to hold the window open and wait for the user.
+      console.log();
+      console.log('Please log in manually in the browser window.');
+      console.log('Press Ctrl+C when done — the profile is saved automatically.');
+      console.log();
+      await new Promise((resolve) => {
+        process.on('SIGINT', resolve);
+        process.on('SIGTERM', resolve);
+      });
     }
 
-    // Keep browser open until Ctrl+C
-    await new Promise((resolve) => {
-      process.on('SIGINT', resolve);
-      process.on('SIGTERM', resolve);
-    });
+    // Give Firefox a moment to flush session cookies to the profile before we quit it cleanly.
+    await br.pause(1500);
   } finally {
-    await br.deleteSession();
+    // Quit Firefox cleanly so the profile is flushed. Tolerate a missing session — after a manual
+    // Ctrl+C geckodriver may already be gone (ECONNREFUSED); the profile is saved regardless.
+    try {
+      await br.deleteSession();
+    } catch { /* driver already gone */ }
   }
 
   console.log();
