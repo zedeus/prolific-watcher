@@ -840,3 +840,42 @@ describe('pruneStudyHistory', () => {
     expect(remaining.map((o) => o.at)).toEqual([recent]);
   });
 });
+
+describe('pruneStudyHistoryToRowCap', () => {
+  const seed = async (n: number) => {
+    const rows = Array.from({ length: n }, (_v, i) => ({
+      study_id: `s${i}`,
+      observed_at: `2026-03-01T00:00:${String(i).padStart(2, '0')}Z`,
+      payload: { reward: { amount: 100 + i, currency: 'GBP' } },
+    }));
+    await db.studiesHistory.bulkAdd(rows);
+  };
+
+  it('drops the oldest rows so only the cap remains, keeping the newest', async () => {
+    await seed(10);
+    const deleted = await store.pruneStudyHistoryToRowCap(4);
+    expect(deleted).toBe(6);
+    const remaining = await db.studiesHistory.orderBy('row_id').toArray();
+    expect(remaining).toHaveLength(4);
+    // The newest four (studies s6..s9) survive; oldest six are gone.
+    expect(remaining.map((r) => r.study_id)).toEqual(['s6', 's7', 's8', 's9']);
+  });
+
+  it('is a no-op when already at/under the cap', async () => {
+    await seed(3);
+    expect(await store.pruneStudyHistoryToRowCap(5)).toBe(0);
+    expect(await store.pruneStudyHistoryToRowCap(3)).toBe(0);
+    expect(await db.studiesHistory.count()).toBe(3);
+  });
+
+  it('clamps a negative/fractional cap to a safe integer floor', async () => {
+    await seed(4);
+    const deleted = await store.pruneStudyHistoryToRowCap(-1);
+    expect(deleted).toBe(4);
+    expect(await db.studiesHistory.count()).toBe(0);
+  });
+
+  it('handles an empty table without throwing', async () => {
+    expect(await store.pruneStudyHistoryToRowCap(100)).toBe(0);
+  });
+});

@@ -62,12 +62,32 @@ import {
   PRIORITY_ALERT_SOUND_TYPE_TO_BASE64_PATH,
   DEBUG_LOG_LIMIT,
   DEBUG_LOG_SUPPRESSED_EVENTS,
+  STORAGE_PRESSURE_WARN_RATIO,
+  STORAGE_PRESSURE_CRITICAL_RATIO,
+  STORAGE_QUOTA_CHECK_PERIOD_MINUTES,
+  STUDY_HISTORY_CRITICAL_ROW_CAP,
+  REFRESH_PERSISTENT_FAILURE_THRESHOLD,
+  AUTH_EXPIRY_RESYNC_MAX_ATTEMPTS,
+  AUTH_EXPIRY_RELOAD_MAX_ATTEMPTS,
+  REFRESH_RECONNECTING_MESSAGE,
+  REFRESH_PERSISTENT_FAILURE_MESSAGE,
+  AUTH_REQUIRED_MESSAGE,
 } from '../../lib/constants';
 import {
   evaluatePrioritySnapshotEvent,
   toFullSnapshotEvent,
 } from './domain';
 import type { NormalizedSnapshotEvent } from './domain';
+import {
+  classifyRefreshStatus,
+  classifyStoragePressure,
+  decideAuthRecoveryAction,
+  isQuotaError,
+  createRefreshHealthTracker,
+  type RefreshOutcome,
+  type RefreshHealthSnapshot,
+  type StorageEstimateInput,
+} from './health';
 import { createPriorityState } from './state';
 import { createPriorityActions } from './actions';
 import { createPrioritySettings } from './settings';
@@ -117,6 +137,15 @@ export default defineBackground({
     let stateWriteQueue: Promise<void | Record<string, unknown>> = Promise.resolve();
     let autoOpenInFlight = false;
     let lastAutoOpenedTabId: number | null = null;
+
+    // Backend resilience (issue #25): pause our own studies fetches while an expired token is being
+    // recovered, and track consecutive refresh failures so a persistent stall surfaces to the popup.
+    let authExpiryPauseActive = false;
+    let storageCheckInFlight = false;
+    let pendingEmergencyPrune = false;
+    const refreshHealth = createRefreshHealthTracker({
+      persistentThreshold: REFRESH_PERSISTENT_FAILURE_THRESHOLD,
+    });
 
     // ─────────────────────────────────────────────────────────────
     // Priority module initialization
@@ -834,10 +863,212 @@ export default defineBackground({
       }, cooldownMS);
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // Refresh-health tracking & recovery (issue #25)
+    // ─────────────────────────────────────────────────────────────
+
+    // Fold a refresh outcome into the health tracker and mirror it into the popup-facing state. A
+    // clean 200 clears the error line; a run of failures at/above the threshold raises a persistent
+    // "it stopped updating" recovery message. Auth and rate-limit failures keep their own messaging
+    // (set by handleAuthExpiry / handleRateLimit), so we don't stomp it with the generic line.
+    async function recordRefreshOutcome(
+      outcome: RefreshOutcome,
+      opts: { reason?: string; extra?: Record<string, unknown> } = {},
+    ): Promise<RefreshHealthSnapshot> {
+      const snap = refreshHealth.record(outcome);
+      const patch: Record<string, unknown> = {
+        studies_refresh_consecutive_failures: snap.consecutiveFailures,
+        studies_refresh_last_outcome: outcome,
+        studies_refresh_recovery_active: snap.persistentlyFailing,
+      };
+      if (outcome === 'ok') {
+        patch.studies_refresh_ok = true;
+        patch.studies_refresh_reason = '';
+        patch.studies_refresh_last_at = nowIso();
+      } else {
+        patch.studies_refresh_ok = false;
+        if (outcome !== 'auth_expired' && outcome !== 'rate_limited') {
+          patch.studies_refresh_reason = snap.persistentlyFailing
+            ? REFRESH_PERSISTENT_FAILURE_MESSAGE
+            : (opts.reason || 'Studies refresh failed.');
+        }
+      }
+      // Let callers fold their own fields into this single write (e.g. the capture-status fields on
+      // the passive-ingest hot path) instead of issuing a second serialized storage round-trip.
+      if (opts.extra) Object.assign(patch, opts.extra);
+      await setState(patch);
+      return snap;
+    }
+
+    async function tryReloadProlificTab(trigger: string): Promise<boolean> {
+      try {
+        const tabs = await queryProlificTabs();
+        if (tabs.length && typeof tabs[0].id === 'number') {
+          await browser.tabs.reload(tabs[0].id);
+          pushDebugLog('refresh.auth_expired.tab_reloaded', { trigger, tab_id: tabs[0].id });
+          return true;
+        }
+      } catch (err) {
+        pushDebugLog('refresh.auth_expired.tab_reload_error', { trigger, error: stringifyError(err) });
+      }
+      return false;
+    }
+
+    // Handle a 401 on a studies refresh: stop our own fetches immediately (a dead token would just
+    // 401 repeatedly), then escalate recovery by how many consecutive auth failures we've seen —
+    // re-read the token, force the tab to silent-renew, or finally ask the user to log in.
+    async function handleAuthExpiry(statusCode: number, trigger: string): Promise<void> {
+      cancelDelayedRefreshes(`auth_expired:${statusCode}`);
+      authExpiryPauseActive = true;
+
+      const snap = await recordRefreshOutcome('auth_expired');
+      const action = decideAuthRecoveryAction(snap.consecutiveAuthFailures, {
+        resyncMax: AUTH_EXPIRY_RESYNC_MAX_ATTEMPTS,
+        reloadMax: AUTH_EXPIRY_RELOAD_MAX_ATTEMPTS,
+      });
+      pushDebugLog('refresh.auth_expired', {
+        trigger,
+        status_code: statusCode,
+        consecutive_auth_failures: snap.consecutiveAuthFailures,
+        action,
+      });
+
+      if (action === 'require_auth') {
+        // We've exhausted automatic recovery. Surface a clear "log in" line via the refresh channel and
+        // stop actively retrying — but do NOT force token_auth_required here. syncTokenOnce (which reads
+        // the actual tab) is the authority on sign-in status; forcing it would flip-flop against the
+        // ~1/min token re-sync whenever a still-valid-looking token lingers, oscillating the popup
+        // between "signed out" and "connected". When the user is genuinely signed out, syncTokenOnce
+        // raises the signed-out state itself.
+        await setState({ studies_refresh_ok: false, studies_refresh_reason: AUTH_REQUIRED_MESSAGE });
+        pushDebugLog('refresh.auth_expired.require_auth', { trigger });
+        return;
+      }
+
+      await setState({ studies_refresh_ok: false, studies_refresh_reason: REFRESH_RECONNECTING_MESSAGE });
+
+      // A tab reload triggers a fresh OIDC flow; tabs.onUpdated('complete') then re-syncs and resumes
+      // us via resumeRefreshesAfterAuthRecovery — so we only fall back to an inline resync if there
+      // was no tab to reload (or the reload failed).
+      if (action === 'reload_tab' && await tryReloadProlificTab(trigger)) {
+        return;
+      }
+      await requestTokenSync(`${trigger}.auth_expired`);
+    }
+
+    // Called from the token-sync success path: if we paused for an expired token and the token is now
+    // valid again, clear the pause and reschedule so refreshes resume. Health resets to healthy only
+    // once a real 200 lands (via recordRefreshOutcome), so a still-broken token re-escalates cleanly.
+    async function resumeRefreshesAfterAuthRecovery(trigger: string): Promise<void> {
+      if (!authExpiryPauseActive) return;
+      authExpiryPauseActive = false;
+      pushDebugLog('refresh.auth_recovered', { trigger });
+      try {
+        const policy = await getStudiesRefreshPolicySettings();
+        scheduleDelayedRefreshes(`${trigger}.auth_recovered`, policy);
+      } catch (err) {
+        pushDebugLog('refresh.auth_recovered.schedule_error', { trigger, error: stringifyError(err) });
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Storage-quota watchdog (issue #25)
+    // ─────────────────────────────────────────────────────────────
+
+    async function readStorageEstimate(): Promise<StorageEstimateInput | null> {
+      try {
+        const nav = (globalThis as unknown as {
+          navigator?: { storage?: { estimate?: () => Promise<StorageEstimateInput> } };
+        }).navigator;
+        if (!nav?.storage?.estimate) return null;
+        // classifyStoragePressure owns all the finite/non-negative coercion, so return the raw estimate.
+        return await nav.storage.estimate();
+      } catch {
+        return null;
+      }
+    }
+
+    // Watch IndexedDB usage and shed old history before writes start failing. `warn` compacts (cheap,
+    // keeps the analytics window); `critical` (or a forced emergency after a real QuotaExceededError)
+    // additionally hard-caps the raw row count. Surfaces usage/pressure into state for diagnostics.
+    async function checkStorageQuota(trigger: string, opts: { forceEmergency?: boolean } = {}): Promise<void> {
+      if (storageCheckInFlight) {
+        // Don't silently drop an emergency (e.g. a real QuotaExceededError) just because a routine
+        // check is mid-flight — a routine `warn` pass only does age/redundancy compaction, not the
+        // row-cap backstop. Remember it and run it as soon as the in-flight pass finishes.
+        if (opts.forceEmergency) pendingEmergencyPrune = true;
+        return;
+      }
+      storageCheckInFlight = true;
+      try {
+        const estimate = await readStorageEstimate();
+        const pressure = classifyStoragePressure(estimate, {
+          warnRatio: STORAGE_PRESSURE_WARN_RATIO,
+          criticalRatio: STORAGE_PRESSURE_CRITICAL_RATIO,
+        });
+        const emergency = pressure.level === 'critical' || opts.forceEmergency === true;
+
+        let deleted = 0;
+        if (emergency || pressure.level === 'warn') {
+          try {
+            deleted += await store.pruneStudyHistory();
+          } catch (err) {
+            pushDebugLog('storage.prune.error', { trigger, error: stringifyError(err) });
+          }
+        }
+        if (emergency) {
+          try {
+            deleted += await store.pruneStudyHistoryToRowCap(STUDY_HISTORY_CRITICAL_ROW_CAP);
+          } catch (err) {
+            pushDebugLog('storage.rowcap_prune.error', { trigger, error: stringifyError(err) });
+          }
+        }
+
+        const patch: Record<string, unknown> = {
+          storage_bytes_used: pressure.usage,
+          storage_quota_bytes: pressure.quota,
+          storage_usage_ratio: pressure.ratio,
+          storage_pressure: pressure.level,
+          storage_checked_at: nowIso(),
+        };
+        if (deleted > 0) {
+          patch.storage_last_prune_at = nowIso();
+          patch.storage_last_prune_deleted = deleted;
+        }
+        await setState(patch);
+        pushDebugLog('storage.quota_check', {
+          trigger,
+          level: pressure.level,
+          ratio: Number(pressure.ratio.toFixed(3)),
+          usage: pressure.usage,
+          quota: pressure.quota,
+          deleted,
+        });
+      } finally {
+        storageCheckInFlight = false;
+        if (pendingEmergencyPrune) {
+          pendingEmergencyPrune = false;
+          void checkStorageQuota('quota_error.deferred', { forceEmergency: true });
+        }
+      }
+    }
+
+    // A studies write that fails with a quota error means we're already at the wall — prune now rather
+    // than letting the failure be swallowed. Forces the emergency path even if estimate() is missing.
+    function handlePossibleQuotaError(error: unknown, source: string): void {
+      if (!isQuotaError(error)) return;
+      pushDebugLog('storage.quota_exceeded', { source });
+      void checkStorageQuota('quota_error', { forceEmergency: true });
+    }
+
     async function runDelayedRefresh(triggerSource: string, generation: number, runIndex: number, runTotal: number): Promise<void> {
       if (generation !== delayedRefreshGeneration) return;
       if (isRateLimited()) {
         pushDebugLog('refresh.delayed.skip_rate_limited', { trigger_source: triggerSource, run_index: runIndex });
+        return;
+      }
+      if (authExpiryPauseActive) {
+        pushDebugLog('refresh.delayed.skip_auth_paused', { trigger_source: triggerSource, run_index: runIndex });
         return;
       }
       // Skip if the Prolific tab just fetched recently — avoids near-duplicate requests
@@ -872,6 +1103,9 @@ export default defineBackground({
           run_index: runIndex,
           error: result.error as string,
         });
+        await recordRefreshOutcome('network_error', {
+          reason: 'Could not reach Prolific to refresh studies.',
+        });
         return;
       }
 
@@ -900,12 +1134,18 @@ export default defineBackground({
               result.status_code,
             );
             notifyPopupDashboardUpdated('delayed_refresh', observedAt);
+            await recordRefreshOutcome('ok');
           } catch (err) {
             pushDebugLog('refresh.delayed.ingest_error', {
               trigger_source: triggerSource,
               run_index: runIndex,
               error: stringifyError(err),
             });
+            handlePossibleQuotaError(err, 'delayed_refresh.ingest');
+            // A 200 we couldn't store still means the feed didn't update — count it as a failure so a
+            // persistent ingest problem (the only health signal on Chrome's active-fetch path, which
+            // has no filterResponseData capture) still flips the persistent-failure state.
+            await recordRefreshOutcome('server_error', { reason: 'Studies update could not be saved.' });
           }
 
           const snapshotEvent = toFullSnapshotEvent(parsedBody, {
@@ -915,6 +1155,10 @@ export default defineBackground({
           if (snapshotEvent) {
             queuePrioritySnapshotEvent(snapshotEvent);
           }
+        } else {
+          // 200 but the body didn't parse — the feed didn't actually update, so count it as a failure
+          // rather than leaving the health state untouched.
+          await recordRefreshOutcome('server_error', { reason: 'Studies response could not be read.' });
         }
       } else {
         try {
@@ -932,12 +1176,20 @@ export default defineBackground({
           });
         }
 
+        // Token expired mid-session — recover proactively instead of silently failing until next cycle.
+        if (result.status_code === 401) {
+          await handleAuthExpiry(401, 'extension.delayed_refresh');
+          return;
+        }
+
         if (result.status_code === 429) {
           let parsedBody: unknown;
           try { parsedBody = JSON.parse(result.body as string); } catch {}
           await handleRateLimit(429, parsedBody, 'extension.delayed_refresh');
           return;
         }
+
+        await recordRefreshOutcome(classifyRefreshStatus(result.status_code as number));
       }
 
       pushDebugLog('refresh.delayed.completed', {
@@ -1476,6 +1728,8 @@ export default defineBackground({
         });
         bumpCounter('token_sync_success_count', 1);
         pushDebugLog('token.sync.ok', { trigger: normalizedTrigger, tab_origin: extracted.origin as string });
+        // If we paused refreshes for an expired token, a fresh valid token means we can resume.
+        await resumeRefreshesAfterAuthRecovery(normalizedTrigger);
       } catch (error) {
         await setTokenSyncState({
           ok: false,
@@ -1715,16 +1969,19 @@ export default defineBackground({
             });
           },
           onIngestSuccess: (context: { observedAt: string }) => {
-            setState({
-              studies_refresh_ok: true,
-              studies_refresh_reason: '',
-              studies_refresh_last_at: context.observedAt,
-              studies_response_capture_ok: true,
-              studies_response_capture_reason: '',
-              studies_response_capture_last_at: context.observedAt,
+            // Single source of truth for refresh health — resets consecutive-failure tracking too.
+            // Fold the capture-status fields into that one write (this is the passive-ingest hot path,
+            // firing on every tab poll) rather than issuing a second serialized storage round-trip.
+            void recordRefreshOutcome('ok', {
+              extra: {
+                studies_response_capture_ok: true,
+                studies_response_capture_reason: '',
+                studies_response_capture_last_at: context.observedAt,
+              },
             });
           },
           onIngestError: (error: unknown, context: { observedAt: string }) => {
+            handlePossibleQuotaError(error, 'response_capture.ingest');
             setState({
               studies_response_capture_ok: false,
               studies_response_capture_reason: stringifyError(error),
@@ -1850,9 +2107,16 @@ export default defineBackground({
       if (details.statusCode === 200) {
         rateLimitCooldownUntilMS = 0;
         if (rateLimitReloadTimer) { clearTimeout(rateLimitReloadTimer); rateLimitReloadTimer = null; }
+        // The Prolific tab's own fetch succeeded, so the session is healthy — lift any auth pause.
+        // (The ingest of this same response records the 'ok' outcome that resets failure tracking.)
+        authExpiryPauseActive = false;
         scheduleDelayedRefreshes('extension.intercepted_response', refreshPolicy);
+      } else if (details.statusCode === 401) {
+        await handleAuthExpiry(401, 'intercepted_response');
       } else if (details.statusCode === 429) {
         await handleRateLimit(429, null, 'intercepted_response');
+      } else if (typeof details.statusCode === 'number' && details.statusCode >= 400) {
+        await recordRefreshOutcome(classifyRefreshStatus(details.statusCode));
       }
     }
 
@@ -2147,6 +2411,14 @@ export default defineBackground({
         browser.alarms.create('history_prune', { periodInMinutes: STUDY_HISTORY_PRUNE_PERIOD_MINUTES });
         pushDebugLog('alarm.scheduled', { name: 'history_prune', period_minutes: STUDY_HISTORY_PRUNE_PERIOD_MINUTES });
       });
+      // Storage-quota watchdog — same guard rationale as history_prune (don't reset a long-period
+      // alarm on every wake). Runs more often than compaction so pressure is caught well before writes
+      // fail; the emergency prune only bites under critical pressure.
+      void browser.alarms.get('storage_check').then((existing) => {
+        if (existing) return;
+        browser.alarms.create('storage_check', { periodInMinutes: STORAGE_QUOTA_CHECK_PERIOD_MINUTES });
+        pushDebugLog('alarm.scheduled', { name: 'storage_check', period_minutes: STORAGE_QUOTA_CHECK_PERIOD_MINUTES });
+      });
     }
 
     function registerCaptureListeners(): void {
@@ -2395,6 +2667,8 @@ export default defineBackground({
       } else if (alarm.name === 'history_prune') {
         // Best-effort maintenance — log failures to diagnostics instead of dying silently.
         void store.pruneStudyHistory().catch((error) => pushDebugLog('history_prune.error', { error: stringifyError(error) }));
+      } else if (alarm.name === 'storage_check') {
+        void checkStorageQuota('alarm');
       }
     });
 
@@ -2436,6 +2710,9 @@ export default defineBackground({
 
       schedule();
       registerCaptureListeners();
+      // One-shot storage check at startup so the popup shows quota status immediately and an
+      // already-full profile is compacted before the first refresh writes.
+      void checkStorageQuota('boot');
       await requestTokenSync(trigger);
 
       // If we got a token and there's an open Prolific tab, do one immediate

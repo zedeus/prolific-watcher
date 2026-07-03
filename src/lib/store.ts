@@ -91,6 +91,24 @@ export async function pruneStudyHistory(now: Date = new Date()): Promise<number>
 }
 
 /**
+ * Emergency backstop for storage pressure (issue #25): drop the oldest studiesHistory rows so at most
+ * `maxRows` most-recent remain. Unlike pruneStudyHistory (age + redundancy, analytics-preserving) this
+ * caps raw row count regardless of age, trading Insights depth for staying under quota. Rows are keyed
+ * by the auto-increment `row_id`, so "oldest" == smallest ids. Returns rows deleted.
+ */
+export async function pruneStudyHistoryToRowCap(maxRows: number): Promise<number> {
+  const cap = Math.max(0, Math.floor(maxRows));
+  return db.transaction('rw', [db.studiesHistory], async () => {
+    const total = await db.studiesHistory.count();
+    if (total <= cap) return 0;
+    const toDelete = total - cap;
+    const oldest = (await db.studiesHistory.orderBy('row_id').limit(toDelete).primaryKeys()) as number[];
+    if (oldest.length) await db.studiesHistory.bulkDelete(oldest);
+    return oldest.length;
+  });
+}
+
+/**
  * Record a "we observed the studies feed at this instant" heartbeat — even when the feed was empty.
  * Downsampled: refreshes within OBSERVATION_MIN_SPACING_MS of the last heartbeat are skipped, so the
  * log stays coarse enough to span months (within the load cap) while still dense enough that the

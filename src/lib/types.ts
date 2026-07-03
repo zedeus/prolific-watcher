@@ -156,6 +156,18 @@ export interface SyncState {
   studies_refresh_reason: string;
   studies_refresh_last_at: string;
 
+  // Backend resilience (issue #25)
+  studies_refresh_consecutive_failures: number;
+  studies_refresh_last_outcome: string;
+  studies_refresh_recovery_active: boolean;
+  storage_bytes_used: number;
+  storage_quota_bytes: number;
+  storage_usage_ratio: number;
+  storage_pressure: string;
+  storage_checked_at: string;
+  storage_last_prune_at: string;
+  storage_last_prune_deleted: number;
+
   // Response capture
   studies_response_capture_ok: boolean;
   studies_response_capture_reason: string;

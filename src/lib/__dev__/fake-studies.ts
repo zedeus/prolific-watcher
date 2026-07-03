@@ -333,14 +333,45 @@ export async function seedFakeStudies(count: number, seed = 42): Promise<number>
   return studies.length;
 }
 
-/** Seed the sync state in browser storage so the popup's auth check passes. No-op outside a browser. */
-async function writeAuthState(): Promise<void> {
+interface LocalStorageArea {
+  get: (key: string) => Promise<Record<string, unknown>>;
+  set: (items: Record<string, unknown>) => Promise<void>;
+}
+
+function resolveLocalStorage(): LocalStorageArea | null {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const b = typeof browser !== 'undefined' ? browser : (typeof (globalThis as any).chrome !== 'undefined' ? (globalThis as any).chrome : null);
-  const storage = b && (b as { storage?: { local?: { set: (items: Record<string, unknown>) => Promise<void> } } }).storage?.local;
+  return (b as { storage?: { local?: LocalStorageArea } } | null)?.storage?.local ?? null;
+}
+
+/** Seed the sync state in browser storage so the popup's auth check passes. No-op outside a browser. */
+async function writeAuthState(): Promise<void> {
+  const storage = resolveLocalStorage();
   if (storage) {
     await storage.set({ [STATE_KEY]: { token_ok: true, token_auth_required: false } });
   }
+}
+
+/**
+ * Dev/test only: merge a patch into the popup-facing sync state so resilience states (issue #25) —
+ * reconnecting after token expiry, a persistent refresh stall, storage pressure — can be driven from
+ * a test without a live background. Preserves existing fields; defaults to a signed-in base so the
+ * popup renders panels rather than the signed-out notice. No-op outside a browser.
+ */
+export async function seedSyncState(patch: Record<string, unknown> = {}): Promise<void> {
+  const storage = resolveLocalStorage();
+  if (!storage) return;
+  const existing = await storage.get(STATE_KEY);
+  const prev = (existing?.[STATE_KEY] as Record<string, unknown>) || {};
+  await storage.set({
+    [STATE_KEY]: {
+      token_ok: true,
+      token_auth_required: false,
+      ...prev,
+      ...patch,
+      updated_at: new Date().toISOString(),
+    },
+  });
 }
 
 /**

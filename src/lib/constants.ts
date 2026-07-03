@@ -173,6 +173,40 @@ export const STUDY_HISTORY_RETENTION_DAYS = 120;
  */
 export const STUDY_HISTORY_PRUNE_PERIOD_MINUTES = 60;
 
+// ─── Backend resilience (issue #25) ──────────────────────────
+/**
+ * Fraction of the storage quota at which we start proactively compacting (`warn`) and at which we
+ * emergency-prune to a hard row cap (`critical`) — before writes begin failing. IndexedDB quotas are
+ * large (often GBs), so these leave ample headroom while still acting well ahead of a hard wall.
+ */
+export const STORAGE_PRESSURE_WARN_RATIO = 0.75;
+export const STORAGE_PRESSURE_CRITICAL_RATIO = 0.9;
+/** How often the background storage-quota watchdog runs. Independent of the hourly compaction alarm. */
+export const STORAGE_QUOTA_CHECK_PERIOD_MINUTES = 30;
+/**
+ * Under `critical` pressure we drop the raw studiesHistory table down to this many most-recent rows —
+ * a last-resort backstop that trades Insights depth for not bricking the extension on a full disk.
+ * Kept below INSIGHTS_MAX_HISTORY_ROWS so it only ever bites in a genuine emergency.
+ */
+export const STUDY_HISTORY_CRITICAL_ROW_CAP = 8_000;
+/**
+ * Consecutive failed studies refreshes before the popup surfaces a persistent "it stopped updating"
+ * recovery state (rather than treating every blip as an outage). Low enough to notice a real stall
+ * within a refresh cycle or two.
+ */
+export const REFRESH_PERSISTENT_FAILURE_THRESHOLD = 3;
+/**
+ * Auth-recovery escalation bands, keyed on consecutive 401s: ≤ RESYNC_MAX just re-reads the token,
+ * ≤ RELOAD_MAX reloads the Prolific tab to force a silent renew, and beyond that we stop and ask the
+ * user to log in — so a genuinely dead token never spins the recovery loop forever.
+ */
+export const AUTH_EXPIRY_RESYNC_MAX_ATTEMPTS = 2;
+export const AUTH_EXPIRY_RELOAD_MAX_ATTEMPTS = 4;
+/** Human-readable recovery lines the popup StatusBar renders (display side proper is #24). */
+export const REFRESH_RECONNECTING_MESSAGE = 'Prolific session expired — reconnecting…';
+export const REFRESH_PERSISTENT_FAILURE_MESSAGE =
+  "Studies aren't updating. Check your connection, or reload the Prolific tab.";
+
 // ─── Earnings analytics ──────────────────────────────────────
 export const EARNINGS_PREFS_KEY = 'earningsPrefs';
 export const DEFAULT_EARNINGS_INCLUDE_PENDING = true;

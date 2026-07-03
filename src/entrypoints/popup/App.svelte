@@ -50,6 +50,7 @@
     formatRelative,
     toUserErrorMessage,
     isAuthRequiredState,
+    deriveSyncStatusMessage,
     normalizeRefreshPolicy,
     cloneTelegramSettings,
   } from '../../lib/format';
@@ -363,17 +364,7 @@
 
   function deriveErrorMessage(state: SyncState | null, sourceError: string): string {
     if (sourceError) return sourceError.trim();
-    if (!state) return '';
-    if (state.token_ok === false) return (state.token_reason || 'Token sync error.').trim();
-    if (state.studies_refresh_ok === false) return (state.studies_refresh_reason || 'Studies refresh sync error.').trim();
-    if (
-      state.studies_response_capture_supported === true &&
-      state.studies_response_capture_ok === false &&
-      state.studies_response_capture_reason
-    ) {
-      return state.studies_response_capture_reason.trim();
-    }
-    return '';
+    return deriveSyncStatusMessage(state);
   }
 
   async function refreshSettings() {

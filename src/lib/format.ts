@@ -317,3 +317,36 @@ export function isAuthRequiredState(state: { token_auth_required?: boolean; toke
     reason.includes('signed out of prolific')
   );
 }
+
+export interface SyncStatusFields {
+  token_ok?: boolean;
+  token_reason?: string;
+  studies_refresh_ok?: boolean;
+  studies_refresh_reason?: string;
+  studies_response_capture_supported?: boolean;
+  studies_response_capture_ok?: boolean;
+  studies_response_capture_reason?: string;
+}
+
+/**
+ * Derive the single human-readable status line the popup shows, in priority order: a token problem
+ * first (auth is the root cause of most stalls), then a failed studies refresh — this is where the
+ * issue-#25 recovery states surface (session-expired/reconnecting and the persistent "not updating"
+ * line arrive pre-worded in studies_refresh_reason) — then a response-capture problem. An empty
+ * string means healthy. Kept pure so the state→message contract is unit-testable without a browser.
+ */
+export function deriveSyncStatusMessage(state: SyncStatusFields | null): string {
+  if (!state) return '';
+  if (state.token_ok === false) return String(state.token_reason || 'Token sync error.').trim();
+  if (state.studies_refresh_ok === false) {
+    return String(state.studies_refresh_reason || 'Studies refresh sync error.').trim();
+  }
+  if (
+    state.studies_response_capture_supported === true &&
+    state.studies_response_capture_ok === false &&
+    state.studies_response_capture_reason
+  ) {
+    return String(state.studies_response_capture_reason).trim();
+  }
+  return '';
+}
