@@ -3,7 +3,6 @@ import type { StudyHistoryRecord, StudyAvailabilityEventRecord } from '../db';
 import {
   buildStudyMeta,
   listingIntervalsByStudy,
-  firstListingDurationSeconds,
   computeFillSpeed,
   fastestFillingStudies,
   computePriceChanges,
@@ -11,6 +10,7 @@ import {
   detectReruns,
   redundantHistoryRowIds,
   computeStudyHistoryInsights,
+  buildObservations,
 } from '../study-history';
 
 // ──────────────────────────────────────────────────────────────
@@ -90,22 +90,6 @@ describe('listingIntervalsByStudy', () => {
     expect(map.get('s1')!.length).toBe(1);
     expect(map.get('s1')![0].duration_seconds).toBeCloseTo(3600, 5);
     expect(map.get('s2')!.length).toBe(0); // available unparseable → nothing opens
-  });
-
-  it('firstListingDurationSeconds returns the first cycle duration, null when never closed', () => {
-    expect(firstListingDurationSeconds([evt('s1', 'available', T(10)), evt('s1', 'unavailable', T(10, 30))])).toBeCloseTo(1800, 5);
-    expect(firstListingDurationSeconds([evt('s1', 'available', T(10))])).toBeNull();
-    expect(firstListingDurationSeconds([])).toBeNull();
-  });
-
-  it('firstListingDurationSeconds uses only the first cycle (a bad first close yields null)', () => {
-    // First cycle opens and closes in the same instant (0s → null); it must NOT skip ahead to the
-    // later valid cycle — matching the researcher-profile behaviour this shared helper replaced.
-    const evs = [
-      evt('s1', 'available', T(10)), evt('s1', 'unavailable', T(10)), // 0s → null duration
-      evt('s1', 'available', T(11)), evt('s1', 'unavailable', T(12)), // 3600s (must be ignored)
-    ];
-    expect(firstListingDurationSeconds(evs)).toBeNull();
   });
 });
 
@@ -364,22 +348,25 @@ describe('computeStudyHistoryInsights', () => {
     expect(insights.reruns).toEqual([]);
   });
 
-  it('assembles all four analyses together', () => {
+  it('assembles all four analyses together (continuously-watched data)', () => {
+    // Continuous observation: background study s0 seen every 10 min supplies the global timeline; s1
+    // appears at 10:00 (we saw s0 at 09:50 without it → real drop) and is watched to its 10:30 close.
+    const obs = [T(9, 50), T(10, 0), T(10, 10), T(10, 20), T(10, 30)];
     const history = [
-      hist({ studyId: 's1', observedAt: T(10), rewardMinor: 500, name: 'Bumped', researcherName: 'Alpha' }),
-      hist({ studyId: 's1', observedAt: T(12), rewardMinor: 900, name: 'Bumped', researcherName: 'Alpha' }),
+      ...obs.map((t) => hist({ studyId: 's0', observedAt: t, rewardMinor: 300 })),
+      hist({ studyId: 's1', observedAt: T(10, 0), rewardMinor: 500, name: 'Bumped', researcherName: 'Alpha' }),
+      hist({ studyId: 's1', observedAt: T(10, 10), rewardMinor: 500, name: 'Bumped', researcherName: 'Alpha' }),
+      hist({ studyId: 's1', observedAt: T(10, 20), rewardMinor: 900, name: 'Bumped', researcherName: 'Alpha' }),
+      hist({ studyId: 's1', observedAt: T(10, 30), rewardMinor: 900, name: 'Bumped', researcherName: 'Alpha' }),
     ];
-    const events = [
-      evt('s1', 'available', T(10)), evt('s1', 'unavailable', T(10, 30)),
-      evt('s1', 'available', T(13)),
-    ];
+    const events = [evt('s1', 'available', T(10, 0)), evt('s1', 'unavailable', T(10, 30))];
     const insights = computeStudyHistoryInsights(history, events, { fastestLimit: 3 });
     expect(insights.empty).toBe(false);
     expect(insights.price_changes[0].direction).toBe('up');
     expect(insights.fill_speed.sample).toBe(1);
-    expect(insights.posting.total_postings).toBe(2);
-    expect(insights.history_count).toBe(2);
-    expect(insights.events_count).toBe(3);
+    expect(insights.fill_speed.skipped_unreliable).toBe(0);
+    expect(insights.posting.total_postings).toBe(1);
+    expect(insights.data_quality.sparse).toBe(false);
   });
 
   it('does not throw on a large mixed history', () => {
@@ -394,6 +381,84 @@ describe('computeStudyHistoryInsights', () => {
     const insights = computeStudyHistoryInsights(history, events);
     expect(performance.now() - t0).toBeLessThan(500);
     expect(insights).toBeTruthy();
+  });
+});
+
+describe('observation-aware reliability (sporadic usage)', () => {
+  // A continuous-observation history: every study seen ~every 10 min while it's live.
+  const denseHistory = (studyId: string, from: number, toIncl: number, day = 1) =>
+    Array.from({ length: (toIncl - from) / 10 + 1 }, (_, i) =>
+      hist({ studyId, observedAt: T(Math.floor((from + i * 10) / 60), (from + i * 10) % 60, day), rewardMinor: 400 }));
+
+  it('keeps a listing we watched from appearance to close', () => {
+    // Background study b provides an observation at 09:50 (before s appears at 10:00); s watched to close.
+    const history = [
+      ...denseHistory('b', 9 * 60 + 50, 10 * 60 + 40),
+      ...denseHistory('s', 10 * 60, 10 * 60 + 30),
+    ];
+    const obs = buildObservations(history);
+    const events = [evt('s', 'available', T(10, 0)), evt('s', 'unavailable', T(10, 30))];
+    const stats = computeFillSpeed(events, obs);
+    expect(stats.sample).toBe(1);
+    expect(stats.skipped_unreliable).toBe(0);
+    expect(stats.median_seconds).toBeCloseTo(1800, 5);
+  });
+
+  it('drops a listing whose close happened during an observation gap (the 161h bug)', () => {
+    // s seen only on day 1; marked unavailable 7 days later when the extension next ran.
+    const history = denseHistory('s', 10 * 60, 10 * 60 + 20, 1);
+    const obs = buildObservations(history);
+    const events = [evt('s', 'available', T(10, 0, 1)), evt('s', 'unavailable', T(10, 0, 8))];
+    const stats = computeFillSpeed(events, obs);
+    expect(stats.sample).toBe(0);
+    expect(stats.skipped_unreliable).toBe(1);
+    expect(stats.median_seconds).toBeNull();
+  });
+
+  it('takes the first RELIABLE close, not the first close (a later watched cycle still counts)', () => {
+    // Cycle 1 closed during a gap (unreliable); cycle 2 was watched to close. The study should still
+    // contribute cycle 2's duration, not be dropped as unreliable.
+    const history = [
+      ...denseHistory('s', 10 * 60, 10 * 60 + 10, 1), // watched briefly on day 1
+      ...denseHistory('s', 10 * 60, 10 * 60 + 20, 8), // watched again on day 8 across cycle 2
+    ];
+    const obs = buildObservations(history);
+    const events = [
+      evt('s', 'available', T(10, 0, 1)), evt('s', 'unavailable', T(9, 0, 8)), // cycle 1 closed 7 days later (gap)
+      evt('s', 'available', T(10, 0, 8)), evt('s', 'unavailable', T(10, 20, 8)), // cycle 2: watched, 20 min
+    ];
+    const stats = computeFillSpeed(events, obs);
+    expect(stats.sample).toBe(1);
+    expect(stats.skipped_unreliable).toBe(0);
+    expect(stats.median_seconds).toBeCloseTo(1200, 5);
+  });
+
+  it('posting cadence excludes studies already listed when watching began', () => {
+    // s appears at the very first observation → we never saw it "drop", so it must not count.
+    const history = denseHistory('s', 10 * 60, 10 * 60 + 20, 1);
+    const obs = buildObservations(history);
+    const cadence = computePostingCadence([evt('s', 'available', T(10, 0, 1))], obs);
+    expect(cadence.total_postings).toBe(0);
+    expect(cadence.skipped_unreliable).toBe(1);
+    expect(cadence.peak_hour).toBeNull();
+  });
+
+  it("reproduces the user's export: a batch already-present, all closed after a 6-day gap", () => {
+    // 8 studies available at the first observation (17:51), all unavailable 6 days later — every
+    // fill sample and every posting is unreliable → nothing usable, flagged sparse.
+    const ids = Array.from({ length: 8 }, (_, i) => `study-${i}`);
+    const history = ids.flatMap((id) => denseHistory(id, 17 * 60 + 51, 18 * 60 + 11, 22)); // watched ~20 min on day 22
+    const events = [
+      ...ids.map((id) => evt(id, 'available', T(17, 51, 22))),
+      ...ids.map((id) => evt(id, 'unavailable', T(11, 39, 28))), // 6 days later
+    ];
+    const insights = computeStudyHistoryInsights(history, events);
+    expect(insights.fill_speed.sample).toBe(0);
+    expect(insights.fill_speed.skipped_unreliable).toBe(8);
+    expect(insights.posting.total_postings).toBe(0);
+    expect(insights.posting.skipped_unreliable).toBe(8);
+    expect(insights.data_quality.sparse).toBe(true);
+    expect(insights.empty).toBe(false); // there IS data — it's just untrustworthy
   });
 });
 

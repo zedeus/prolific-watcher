@@ -86,11 +86,19 @@
   {:else}
     <div class="insights min-h-[350px] max-h-[456px] scroll-container pb-1 flex flex-col gap-2">
 
+      <!-- Data-quality note — only when sporadic usage left the data mostly untrustworthy. -->
+      {#if insights.data_quality.sparse}
+        <div class="rounded-lg border border-base-300 bg-base-200/50 p-2.5 text-[11.5px] text-base-content/70 leading-snug">
+          <span class="font-medium text-base-content/80">Keep Pulse running for accurate stats.</span>
+          Your history has gaps — studies came and went while it wasn't open, so their fill and drop times are unknown. Fill speed and posting times below only count studies watched from start to finish.
+        </div>
+      {/if}
+
       <!-- Fill speed + fastest fillers -->
       <section class="rounded-lg border border-base-300 bg-base-100 p-3">
         <div class="flex items-baseline justify-between gap-2">
           <h3 class="text-[13px] font-semibold text-base-content">How fast studies fill</h3>
-          <span class="text-[10.5px] text-base-content/45" title="Studies we watched open and later close">{insights.fill_speed.sample} closed</span>
+          <span class="text-[10.5px] text-base-content/45" title="'Tracked' = listings watched start to finish. 'Skipped' = studies that changed while Pulse wasn't open, so their fill time is unknown.">{insights.fill_speed.sample} tracked{#if insights.fill_speed.skipped_unreliable > 0} · {insights.fill_speed.skipped_unreliable} skipped{/if}</span>
         </div>
         {#if insights.fill_speed.median_seconds !== null}
           <p class="mt-1 text-[12px] text-base-content/70">
@@ -118,8 +126,13 @@
               {/each}
             </div>
           {/if}
-        {:else}
-          <p class="mt-1 text-[12px] text-base-content/45">No studies have opened and closed yet — this fills in as studies come and go.</p>
+        {:else if !insights.data_quality.sparse}
+          <!-- When sparse, the banner above already explains the gaps — don't repeat it here. -->
+          {#if insights.fill_speed.skipped_unreliable > 0}
+            <p class="mt-1 text-[12px] text-base-content/45">Can't measure fill speed yet — the studies seen so far came and went while Pulse wasn't watching. Keep it running to track this.</p>
+          {:else}
+            <p class="mt-1 text-[12px] text-base-content/45">No studies have opened and closed yet — this fills in as studies come and go.</p>
+          {/if}
         {/if}
       </section>
 

@@ -97,6 +97,24 @@ describe('Visual: Study-history Insights (issue #19)', () => {
     await screenshot('insights-dark');
   });
 
+  it('insights panel — sporadic-usage data-quality note (light)', async () => {
+    // Re-seed the sparse (gappy) case: studies seen once, gone after a multi-day gap.
+    await clearAll();
+    await browser.executeAsync((done) => {
+      window.__ppDev.seedSparseStudies(8).then((n) => done(n)).catch((e) => done(String(e)));
+    });
+    await browser.url(POPUP_URL);
+    await browser.pause(400);
+    await navigateTo('insights');
+    await browser.waitUntil(
+      async () => browser.execute(() => !!document.querySelector('#panelInsights .insights, #panelInsights .border-dashed')),
+      { timeout: 5000, interval: 100, timeoutMsg: 'insights never rendered' },
+    );
+    await setTheme('light');
+    await browser.pause(200);
+    await screenshot('insights-sparse-light');
+  });
+
   after(async () => {
     await clearAll();
   });

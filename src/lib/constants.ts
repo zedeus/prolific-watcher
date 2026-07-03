@@ -137,6 +137,15 @@ export const REACTIVE_REFRESH_DEBOUNCE_MS = 150;
 export const PRIORITY_FILTER_PERSIST_DEBOUNCE_MS = 250;
 
 // ─── Study-history insights ──────────────────────────────────
+/**
+ * Max gap (ms) between observations for a study's lifecycle to count as "continuously watched". Event
+ * timestamps are only trustworthy when Pulse was actually observing across them: if a study's last
+ * seen-present observation is more than this before its `unavailable` event (or nothing was observed
+ * this long before it appeared), it changed while we weren't watching, so its fill time / "drop" time
+ * is noise and must be excluded. Comfortably above the normal refresh cadence (≤ ~2 min) so continuous
+ * use is never penalised, but far below real session gaps (hours/days).
+ */
+export const RELIABLE_OBSERVATION_GAP_MS = 15 * 60 * 1000; // 15 minutes
 /** Hard cap on rows loaded for the Insights view (most-recent first). Compaction keeps this ample. */
 export const INSIGHTS_MAX_HISTORY_ROWS = 20_000;
 export const INSIGHTS_MAX_EVENTS = 5_000;

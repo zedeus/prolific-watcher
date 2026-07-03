@@ -683,7 +683,10 @@ describe('getStudyTypeMap — malformed payloads', () => {
 describe('getResearcherStudyData', () => {
   it('returns empty result for a blank id', async () => {
     const data = await store.getResearcherStudyData('   ');
-    expect(data).toEqual({ researcher: null, studies: [], availabilityEvents: [] });
+    expect(data.researcher).toBeNull();
+    expect(data.studies).toEqual([]);
+    expect(data.availabilityEvents).toEqual([]);
+    expect(data.observations.all).toEqual([]);
   });
 
   it('joins studies + availability events for a researcher, skipping other researchers', async () => {
@@ -725,9 +728,18 @@ describe('getResearcherStudyData', () => {
 
 describe('getStudyInsights', () => {
   it('computes insights from stored history + events', async () => {
+    // Continuously watched: a background study b gives an observation before s1 appears, and s1 is
+    // seen every ~10 min from its 10:00 appearance to its 10:30 close (so the listing is trustworthy).
+    const bumpy = (amount: number, at: string) => ({
+      study_id: 's1', observed_at: at,
+      payload: { name: 'Bumpy', reward: { amount, currency: 'GBP' }, researcher: { id: 'r1', name: 'Lab' } },
+    });
     await db.studiesHistory.bulkAdd([
-      { study_id: 's1', observed_at: '2026-03-01T10:00:00Z', payload: { name: 'Bumpy', reward: { amount: 500, currency: 'GBP' }, researcher: { id: 'r1', name: 'Lab' } } },
-      { study_id: 's1', observed_at: '2026-03-01T12:00:00Z', payload: { name: 'Bumpy', reward: { amount: 900, currency: 'GBP' }, researcher: { id: 'r1', name: 'Lab' } } },
+      { study_id: 'b', observed_at: '2026-03-01T09:50:00Z', payload: { reward: { amount: 300, currency: 'GBP' } } },
+      bumpy(500, '2026-03-01T10:00:00Z'),
+      bumpy(500, '2026-03-01T10:10:00Z'),
+      bumpy(900, '2026-03-01T10:20:00Z'),
+      bumpy(900, '2026-03-01T10:30:00Z'),
     ]);
     await db.studyAvailabilityEvents.bulkAdd([
       { study_id: 's1', study_name: 'Bumpy', event_type: 'available', observed_at: '2026-03-01T10:00:00Z' },

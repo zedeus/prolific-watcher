@@ -3,7 +3,7 @@ import { extractSubmissionReward, extractStartedAt } from './earnings';
 import { nowIso, trimString, formatStudyLabel } from './format';
 import { CSV_SUBMISSION_ID_PREFIX } from './import-csv';
 import { researcherRefFromPayload } from './submission-analytics';
-import { computeStudyHistoryInsights, redundantHistoryRowIds, type StudyHistoryInsights } from './study-history';
+import { computeStudyHistoryInsights, redundantHistoryRowIds, buildObservations, type StudyHistoryInsights, type Observations } from './study-history';
 import {
   INSIGHTS_MAX_HISTORY_ROWS,
   INSIGHTS_MAX_EVENTS,
@@ -228,6 +228,8 @@ export interface ResearcherStudyData {
   researcher: ResearcherRecord | null;
   studies: Study[];
   availabilityEvents: StudyAvailabilityEventRecord[];
+  /** Observation timeline for this researcher's studies, so "typically listed" ignores unwatched gaps. */
+  observations: Observations;
 }
 
 /**
@@ -238,7 +240,7 @@ export interface ResearcherStudyData {
  */
 export async function getResearcherStudyData(researcherId: string): Promise<ResearcherStudyData> {
   const id = trimString(researcherId);
-  if (!id) return { researcher: null, studies: [], availabilityEvents: [] };
+  if (!id) return { researcher: null, studies: [], availabilityEvents: [], observations: buildObservations([]) };
 
   const [researcher, latestRows] = await Promise.all([
     db.researchers.get(id),
@@ -255,11 +257,14 @@ export async function getResearcherStudyData(researcherId: string): Promise<Rese
     }
   }
 
-  const availabilityEvents = studyIds.length > 0
-    ? await db.studyAvailabilityEvents.where('study_id').anyOf(studyIds).toArray()
-    : [];
+  const [availabilityEvents, history] = studyIds.length > 0
+    ? await Promise.all([
+        db.studyAvailabilityEvents.where('study_id').anyOf(studyIds).toArray(),
+        db.studiesHistory.where('study_id').anyOf(studyIds).toArray(),
+      ])
+    : [[], []];
 
-  return { researcher: researcher ?? null, studies, availabilityEvents };
+  return { researcher: researcher ?? null, studies, availabilityEvents, observations: buildObservations(history) };
 }
 
 export async function listKnownResearchers(): Promise<ResearcherRecord[]> {

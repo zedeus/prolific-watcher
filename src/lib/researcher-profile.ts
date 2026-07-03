@@ -2,7 +2,7 @@ import type { SubmissionRecord, StudyAvailabilityEventRecord, ResearcherRecord }
 import type { Study } from './types';
 import { trimString } from './format';
 import { categorizeStatus, researcherRefFromPayload } from './submission-analytics';
-import { firstListingDurationSeconds } from './study-history';
+import { reliableListingSeconds, type Observations } from './study-history';
 import {
   extractSubmissionReward,
   extractDurationSeconds,
@@ -102,6 +102,8 @@ export interface ResearcherProfileInput {
   submissions: SubmissionRecord[];
   studies?: Study[];
   availabilityEvents?: StudyAvailabilityEventRecord[];
+  /** Observation timeline (from studiesHistory) so "typically listed" ignores unwatched-across listings. */
+  observations?: Observations;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -282,23 +284,11 @@ function estimateMinutesFromPayload(s: SubmissionRecord): number | null {
 export function computeStudyContext(
   studies: Study[],
   events: StudyAvailabilityEventRecord[],
+  observations?: Observations,
 ): ResearcherStudyContext {
   const studyIds = new Set(studies.map((s) => s.id).filter(Boolean));
-
-  const byStudy = new Map<string, StudyAvailabilityEventRecord[]>();
-  for (const e of events) {
-    if (!studyIds.has(e.study_id)) continue;
-    const list = byStudy.get(e.study_id);
-    if (list) list.push(e);
-    else byStudy.set(e.study_id, [e]);
-  }
-
-  const durations: number[] = [];
-  for (const evs of byStudy.values()) {
-    const secs = firstListingDurationSeconds(evs);
-    if (secs !== null) durations.push(secs);
-  }
-  durations.sort((a, b) => a - b);
+  const relevant = events.filter((e) => studyIds.has(e.study_id));
+  const durations = reliableListingSeconds(relevant, observations).sort((a, b) => a - b);
 
   return {
     studies_posted: studyIds.size,
@@ -320,7 +310,7 @@ export function computeResearcherProfile(input: ResearcherProfileInput): Researc
   );
 
   const study = input.studies !== undefined || input.availabilityEvents !== undefined
-    ? computeStudyContext(studies, input.availabilityEvents ?? [])
+    ? computeStudyContext(studies, input.availabilityEvents ?? [], input.observations)
     : null;
 
   const rec = input.researcher;

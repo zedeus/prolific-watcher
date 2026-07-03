@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { SubmissionRecord, StudyAvailabilityEventRecord } from '../db';
+import type { SubmissionRecord, StudyAvailabilityEventRecord, StudyHistoryRecord } from '../db';
 import type { Study } from '../types';
 import {
   computeReliability,
@@ -11,6 +11,7 @@ import {
   reliabilityFor,
   RELIABILITY_MIN_TERMINAL,
 } from '../researcher-profile';
+import { buildObservations } from '../study-history';
 
 interface SubOpts {
   id?: string;
@@ -229,6 +230,22 @@ describe('computeStudyContext', () => {
   it('skips studies still listed (no unavailable event)', () => {
     const ctx = computeStudyContext([study('s1')], [evt('s1', 'available', '2025-03-01T10:00:00Z')]);
     expect(ctx.median_listing_seconds).toBeNull();
+  });
+
+  it('excludes a listing whose close happened during an observation gap (sporadic usage)', () => {
+    // Seen once (day 1), then marked unavailable 7 days later when Pulse next ran — the "duration" is
+    // really the gap between sessions, so it must not feed the researcher's "typically listed" figure.
+    const events = [
+      evt('s1', 'available', '2025-03-01T10:00:00Z'),
+      evt('s1', 'unavailable', '2025-03-08T10:00:00Z'),
+    ];
+    const history: StudyHistoryRecord[] = [{ study_id: 's1', observed_at: '2025-03-01T10:00:00Z', payload: {} }];
+    const obs = buildObservations(history);
+    const filtered = computeStudyContext([study('s1')], events, obs);
+    expect(filtered.listing_sample).toBe(0);
+    expect(filtered.median_listing_seconds).toBeNull();
+    // Without an observation timeline (older callers), it still counts — backward compatible.
+    expect(computeStudyContext([study('s1')], events).listing_sample).toBe(1);
   });
 });
 

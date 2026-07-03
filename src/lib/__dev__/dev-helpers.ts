@@ -1,5 +1,5 @@
 import { seedFakeSubmissions, clearFakeSubmissions } from './fake-submissions';
-import { seedFakeStudies, clearFakeStudies, wipeStudyData } from './fake-studies';
+import { seedFakeStudies, seedSparseStudies, clearFakeStudies, wipeStudyData } from './fake-studies';
 
 declare global {
   interface Window {
@@ -7,6 +7,7 @@ declare global {
       seed: (count: number, seed?: number) => Promise<number>;
       clear: () => Promise<void>;
       seedStudies: (count: number, seed?: number) => Promise<number>;
+      seedSparseStudies: (count?: number, seed?: number) => Promise<number>;
       clearStudies: () => Promise<void>;
       wipeStudyData: () => Promise<void>;
     };
@@ -19,6 +20,7 @@ export function attachDevHelpers(): void {
     seed: seedFakeSubmissions,
     clear: clearFakeSubmissions,
     seedStudies: seedFakeStudies,
+    seedSparseStudies,
     clearStudies: clearFakeStudies,
     wipeStudyData,
   };

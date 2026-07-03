@@ -139,8 +139,11 @@ function buildResearcherRecords(now: Date): ResearcherRecord[] {
 }
 
 // Days of study-history/event timeline to fabricate behind "now".
-const HISTORY_WINDOW_DAYS = 8;
-const SNAPSHOT_INTERVAL_MS = 3 * 60 * 60 * 1000; // mirror ~a refresh cadence, collapsed
+const HISTORY_WINDOW_DAYS = 3;
+// The fake extension "refreshes" on this grid across the whole window — well under
+// RELIABLE_OBSERVATION_GAP_MS so the seeded demo models a continuously-watched participant (every
+// listing counts). Real sporadic-usage gaps are exercised in unit tests instead.
+const REFRESH_INTERVAL_MS = 6 * 60 * 1000; // 6 min
 // Posting cadence peaks in the daytime so the Insights "best times" chart shows a clear shape.
 const HOUR_WEIGHTS = [
   0.3, 0.2, 0.15, 0.15, 0.2, 0.4, 0.8, 1.6, 2.6, 3.4, 4.0, 3.8, // 0..11
@@ -175,8 +178,16 @@ function snapshotPayload(study: Study, rewardMinor: number, placesAvailable: num
 }
 
 interface Cycle {
-  start: Date;
-  end: Date | null; // null = still listed
+  start: number; // epoch ms
+  end: number | null; // null = still listed at "now"
+}
+
+interface StudyPlan {
+  cycles: Cycle[];
+  baseReward: number;
+  bumpedReward: number;
+  changeAtMs: number; // Infinity = no reward change
+  totalPlaces: number;
 }
 
 interface StudyActivity {
@@ -184,71 +195,91 @@ interface StudyActivity {
   history: Omit<StudyHistoryRecord, 'row_id'>[];
 }
 
+/** Decide a study's presence cycles + reward trajectory (still in "plan" form, not yet observed). */
+function planStudy(s: Study, idx: number, now: Date, windowStartMs: number, rng: () => number): StudyPlan {
+  const baseReward = s.reward.amount;
+  const totalPlaces = s.total_available_places || 50;
+  const cycles: Cycle[] = [];
+  let changeAtMs = Infinity;
+  let bumpedReward = baseReward;
+
+  if (idx % 5 === 0) {
+    // Regular rerun: 3–4 near-daily listings at a stable daytime hour → flagged "scheduled".
+    const count = 3 + Math.floor(rng() * 2);
+    const hour = 9 + Math.floor(rng() * 8);
+    for (let c = count - 1; c >= 0; c--) {
+      const start = pastLocal(now, c, hour, rng).getTime();
+      const listedMin = 25 + Math.floor(rng() * 90);
+      const stillLive = c === 0 && rng() < 0.4;
+      cycles.push({ start, end: stillLive ? null : start + listedMin * 60_000 });
+    }
+  } else if (idx % 5 === 1) {
+    // Long-lived background study spanning ~the whole window (starts early), with one reward change
+    // partway → a price move. These also keep ≥1 study observed at all times, so other studies'
+    // appearances have a prior observation and count as real "drops".
+    const start = windowStartMs + Math.floor(rng() * 0.2 * 86_400_000);
+    cycles.push({ start, end: null });
+    const dir = rng() < 0.6 ? 1 : -1;
+    const frac = 0.15 + rng() * 0.3;
+    bumpedReward = Math.max(50, Math.round(baseReward * (1 + dir * frac)));
+    changeAtMs = start + (0.4 + rng() * 0.2) * (now.getTime() - start);
+  } else {
+    // Normal single listing somewhere in the window; some fill fast, ~40% still live.
+    const daysAgo = Math.floor(rng() * HISTORY_WINDOW_DAYS);
+    const start = pastLocal(now, daysAgo, pickHour(rng), rng).getTime();
+    const fast = idx % 7 === 3;
+    const listedMin = fast ? 3 + Math.floor(rng() * 12) : 25 + Math.floor(rng() * 150);
+    const stillLive = daysAgo === 0 && rng() < 0.4;
+    cycles.push({ start, end: stillLive ? null : start + listedMin * 60_000 });
+  }
+  return { cycles, baseReward, bumpedReward, changeAtMs, totalPlaces };
+}
+
 /**
- * Fabricate a study-history + availability-event timeline rich enough to exercise every Insights
- * analysis: fill speed (closed listings), posting cadence (daytime-biased `available` times), price
- * moves (reward bumps/cuts on long-lived studies), and reruns (studies re-listed on a schedule).
- * Deterministic given the seed.
+ * Fabricate a study-history + availability-event timeline by replaying a continuous refresh grid over
+ * the window — exactly like production reconcile. At each refresh we record every live study and emit
+ * available/unavailable transitions, so the data models a continuously-watched participant: dense
+ * per-study observations (reliable fill speed), a prior observation before each drop (reliable posting
+ * cadence), reward moves, and near-daily reruns. Deterministic given the seed.
  */
 function buildStudyActivity(studies: Study[], now: Date, seed: number): StudyActivity {
   const rng = makeRng(seed + 7);
+  const nowMs = now.getTime();
+  const windowStartMs = nowMs - HISTORY_WINDOW_DAYS * 86_400_000;
+  const nameById = new Map(studies.map((s) => [s.id, s.name]));
+  const plans = studies.map((s, i) => planStudy(s, i, now, windowStartMs, rng));
+
   const events: Omit<StudyAvailabilityEventRecord, 'row_id'>[] = [];
   const history: Omit<StudyHistoryRecord, 'row_id'>[] = [];
+  const placesLeft = new Map<string, number>();
 
-  for (let idx = 0; idx < studies.length; idx++) {
-    const s = studies[idx];
-    const baseReward = s.reward.amount;
-    const totalPlaces = s.total_available_places || 50;
+  const isLive = (c: Cycle, t: number) => t >= c.start && (c.end === null || t < c.end);
+  let prevLive = new Set<string>();
 
-    const cycles: Cycle[] = [];
-    let changeAtMs = Infinity;
-    let bumpedReward = baseReward;
-
-    if (idx % 5 === 0) {
-      // Regular rerun: 3–4 near-daily listings at a stable local hour → flagged "scheduled".
-      // Anchor reruns in the working day (9am–4pm) so their concentrated postings reinforce — rather
-      // than fight — the daytime posting-cadence peak in the seeded demo.
-      const count = 3 + Math.floor(rng() * 2);
-      const hour = 9 + Math.floor(rng() * 8);
-      for (let c = count - 1; c >= 0; c--) {
-        const start = pastLocal(now, c, hour, rng);
-        const listedMin = 25 + Math.floor(rng() * 90);
-        const stillLive = c === 0 && rng() < 0.4;
-        cycles.push({ start, end: stillLive ? null : new Date(start.getTime() + listedMin * 60_000) });
-      }
-    } else if (idx % 5 === 1) {
-      // Long-lived (listed 6–8 days ago, still listed), with one reward change partway → a price move.
-      // Anchored to a daytime hour (like reruns/normal) so the posting-cadence peak is daytime and
-      // timezone-independent, instead of drifting with the absolute seed time.
-      const start = pastLocal(now, 6 + Math.floor(rng() * 2), pickHour(rng), rng);
-      cycles.push({ start, end: null });
-      const dir = rng() < 0.6 ? 1 : -1;
-      const frac = 0.15 + rng() * 0.3;
-      bumpedReward = Math.max(50, Math.round(baseReward * (1 + dir * frac)));
-      changeAtMs = start.getTime() + (0.4 + rng() * 0.2) * (now.getTime() - start.getTime());
-    } else {
-      // Normal single listing somewhere in the window; some fill fast, ~40% still live.
-      const daysAgo = Math.floor(rng() * HISTORY_WINDOW_DAYS);
-      const start = pastLocal(now, daysAgo, pickHour(rng), rng);
-      const fast = idx % 7 === 3;
-      const listedMin = fast ? 3 + Math.floor(rng() * 12) : 25 + Math.floor(rng() * 150);
-      const stillLive = daysAgo === 0 && rng() < 0.4;
-      cycles.push({ start, end: stillLive ? null : new Date(start.getTime() + listedMin * 60_000) });
+  for (let t = windowStartMs; t <= nowMs; t += REFRESH_INTERVAL_MS) {
+    const iso = new Date(t).toISOString();
+    const live = new Set<string>();
+    for (let i = 0; i < studies.length; i++) {
+      if (plans[i].cycles.some((c) => isLive(c, t))) live.add(studies[i].id);
     }
-
-    for (const cy of cycles) {
-      events.push({ study_id: s.id, study_name: s.name, event_type: 'available', observed_at: cy.start.toISOString() });
-      const end = cy.end ? cy.end.getTime() : now.getTime();
-      let placesLeft = totalPlaces;
-      for (let t = cy.start.getTime(); t <= end; t += SNAPSHOT_INTERVAL_MS) {
-        const rewardAt = t >= changeAtMs ? bumpedReward : baseReward;
-        placesLeft = Math.max(0, placesLeft - Math.round(rng() * 2));
-        history.push({ study_id: s.id, observed_at: new Date(t).toISOString(), payload: snapshotPayload(s, rewardAt, placesLeft) });
-      }
-      if (cy.end) {
-        events.push({ study_id: s.id, study_name: s.name, event_type: 'unavailable', observed_at: cy.end.toISOString() });
-      }
+    // Reconcile against the previous refresh.
+    for (const id of live) {
+      if (!prevLive.has(id)) events.push({ study_id: id, study_name: nameById.get(id) ?? id, event_type: 'available', observed_at: iso });
     }
+    for (const id of prevLive) {
+      if (!live.has(id)) events.push({ study_id: id, study_name: nameById.get(id) ?? id, event_type: 'unavailable', observed_at: iso });
+    }
+    // Snapshot every live study (one history row per observed study per refresh).
+    for (let i = 0; i < studies.length; i++) {
+      const s = studies[i];
+      if (!live.has(s.id)) continue;
+      const p = plans[i];
+      const reward = t >= p.changeAtMs ? p.bumpedReward : p.baseReward;
+      const pl = Math.max(0, (placesLeft.get(s.id) ?? p.totalPlaces) - Math.round(rng() * 2));
+      placesLeft.set(s.id, pl);
+      history.push({ study_id: s.id, observed_at: iso, payload: snapshotPayload(s, reward, pl) });
+    }
+    prevLive = live;
   }
 
   return { events, history };
@@ -294,14 +325,61 @@ export async function seedFakeStudies(count: number, seed = 42): Promise<number>
     },
   );
 
-  // Also seed the sync state in browser storage so auth check passes
+  await writeAuthState();
+  return studies.length;
+}
+
+/** Seed the sync state in browser storage so the popup's auth check passes. No-op outside a browser. */
+async function writeAuthState(): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const b = typeof browser !== 'undefined' ? browser : (typeof (globalThis as any).chrome !== 'undefined' ? (globalThis as any).chrome : null);
   const storage = b && (b as { storage?: { local?: { set: (items: Record<string, unknown>) => Promise<void> } } }).storage?.local;
   if (storage) {
     await storage.set({ [STATE_KEY]: { token_ok: true, token_auth_required: false } });
   }
+}
 
+/**
+ * Dev/test only: seed the *sporadic-usage* failure case — a batch of studies observed in one short
+ * burst, then all marked unavailable after a multi-day gap (a user who opened Pulse once, came back
+ * days later). Every fill/posting sample is unobserved-across, so the Insights panel should show its
+ * "keep Pulse running" data-quality note rather than confident-but-wrong numbers.
+ */
+export async function seedSparseStudies(count = 8, seed = 7): Promise<number> {
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+  const burstStart = nowDate.getTime() - 6 * 86_400_000; // first (and only) session, 6 days ago
+  const studies = generateFakeStudies({ count, seed, now: new Date(burstStart) });
+
+  const history: Omit<StudyHistoryRecord, 'row_id'>[] = [];
+  const events: Omit<StudyAvailabilityEventRecord, 'row_id'>[] = [];
+  // A short burst of observations at the start; every study is available at the first one.
+  for (let k = 0; k < 3; k++) {
+    const t = new Date(burstStart + k * REFRESH_INTERVAL_MS).toISOString();
+    for (const s of studies) {
+      if (k === 0) events.push({ study_id: s.id, study_name: s.name, event_type: 'available', observed_at: t });
+      history.push({ study_id: s.id, observed_at: t, payload: s as unknown as Record<string, unknown> });
+    }
+  }
+  // Days later Pulse runs again and finds them all gone — the `unavailable` stamps are far from the
+  // last time we actually saw each study, which is exactly what makes their durations untrustworthy.
+  for (const s of studies) {
+    events.push({ study_id: s.id, study_name: s.name, event_type: 'unavailable', observed_at: now });
+  }
+
+  await db.transaction(
+    'rw',
+    [db.studiesLatest, db.studiesActiveSnapshot, db.serviceState, db.researchers, db.studyAvailabilityEvents, db.studiesHistory],
+    async () => {
+      await db.studiesLatest.bulkPut(studies.map((s) => ({ study_id: s.id, name: s.name, payload: s as unknown as Record<string, unknown>, last_seen_at: now })));
+      await db.researchers.bulkPut(buildResearcherRecords(nowDate));
+      await db.studyAvailabilityEvents.bulkAdd(events);
+      await db.studiesHistory.bulkAdd(history);
+      await db.serviceState.put({ id: 1, last_studies_refresh_at: now, last_studies_refresh_source: 'fake-studies', updated_at: now });
+    },
+  );
+
+  await writeAuthState();
   return studies.length;
 }
 

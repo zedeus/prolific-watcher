@@ -654,6 +654,7 @@
         submissions: subs,
         studies: ctx.studies,
         availabilityEvents: ctx.availabilityEvents,
+        observations: ctx.observations,
       });
     } catch {
       profile = computeResearcherProfile({ id, name, submissions: subs });

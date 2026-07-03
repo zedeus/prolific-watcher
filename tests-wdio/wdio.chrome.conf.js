@@ -22,8 +22,23 @@ function findChromeBinary() {
   return '/usr/bin/google-chrome-stable';
 }
 
+// Prefer a locally-installed chromedriver (must match the CfT Chrome above) so runs don't depend on
+// wdio auto-downloading a driver — which mis-targets the latest version rather than the pinned CfT one.
+// Returns null when none is found, letting wdio fall back to its automated driver management (e.g. CI).
+function findChromedriverBinary() {
+  if (process.env.CHROMEDRIVER_BINARY) return process.env.CHROMEDRIVER_BINARY;
+  try {
+    const found = execSync(`ls -1 ${process.env.HOME}/tmp/prolific-pulse/cft/chromedriver*/chromedriver-linux64/chromedriver /tmp/cft/chromedriver*/chromedriver-linux64/chromedriver 2>/dev/null | tail -1`)
+      .toString().trim();
+    if (found) return found;
+  } catch { /* not found */ }
+  return null;
+}
+
 prepareChromeExtensionDir();
 fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
+
+const chromedriverBinary = findChromedriverBinary();
 
 export const config = {
   ...SHARED_CONFIG,
@@ -39,10 +54,15 @@ export const config = {
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-search-engine-choice-screen',
-        ...(headless ? ['--headless=new'] : []),
+        // Needed for Chrome to start in sandboxed/containerised runners without a "tab crashed" on the
+        // first session (no user namespaces, small /dev/shm). Harmless for a throwaway test browser.
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        ...(headless ? ['--headless=new', '--disable-gpu'] : []),
       ],
       excludeSwitches: ['disable-extensions'],
     },
+    ...(chromedriverBinary ? { 'wdio:chromedriverOptions': { binary: chromedriverBinary } } : {}),
   }],
 
   async before() {
