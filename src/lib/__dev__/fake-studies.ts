@@ -193,6 +193,7 @@ interface StudyPlan {
 interface StudyActivity {
   events: Omit<StudyAvailabilityEventRecord, 'row_id'>[];
   history: Omit<StudyHistoryRecord, 'row_id'>[];
+  observations: string[]; // one heartbeat per grid refresh (the durable observation log)
 }
 
 /** Decide a study's presence cycles + reward trajectory (still in "plan" form, not yet observed). */
@@ -251,6 +252,7 @@ function buildStudyActivity(studies: Study[], now: Date, seed: number): StudyAct
 
   const events: Omit<StudyAvailabilityEventRecord, 'row_id'>[] = [];
   const history: Omit<StudyHistoryRecord, 'row_id'>[] = [];
+  const observations: string[] = [];
   const placesLeft = new Map<string, number>();
 
   const isLive = (c: Cycle, t: number) => t >= c.start && (c.end === null || t < c.end);
@@ -258,6 +260,7 @@ function buildStudyActivity(studies: Study[], now: Date, seed: number): StudyAct
 
   for (let t = windowStartMs; t <= nowMs; t += REFRESH_INTERVAL_MS) {
     const iso = new Date(t).toISOString();
+    observations.push(iso); // heartbeat every refresh, even when nothing is live
     const live = new Set<string>();
     for (let i = 0; i < studies.length; i++) {
       if (plans[i].cycles.some((c) => isLive(c, t))) live.add(studies[i].id);
@@ -282,7 +285,7 @@ function buildStudyActivity(studies: Study[], now: Date, seed: number): StudyAct
     prevLive = live;
   }
 
-  return { events, history };
+  return { events, history, observations };
 }
 
 export async function seedFakeStudies(count: number, seed = 42): Promise<number> {
@@ -308,13 +311,14 @@ export async function seedFakeStudies(count: number, seed = 42): Promise<number>
 
   await db.transaction(
     'rw',
-    [db.studiesLatest, db.studiesActiveSnapshot, db.serviceState, db.researchers, db.studyAvailabilityEvents, db.studiesHistory],
+    [db.studiesLatest, db.studiesActiveSnapshot, db.serviceState, db.researchers, db.studyAvailabilityEvents, db.studiesHistory, db.observationLog],
     async () => {
       await db.studiesLatest.bulkPut(latestRecords);
       await db.studiesActiveSnapshot.bulkPut(snapshotRecords);
       await db.researchers.bulkPut(buildResearcherRecords(nowDate));
       await db.studyAvailabilityEvents.bulkAdd(activity.events);
       await db.studiesHistory.bulkAdd(activity.history);
+      await db.observationLog.bulkAdd(activity.observations.map((at) => ({ at })));
       // Seed service state so the popup shows as "logged in"
       await db.serviceState.put({
         id: 1,
@@ -353,28 +357,33 @@ export async function seedSparseStudies(count = 8, seed = 7): Promise<number> {
 
   const history: Omit<StudyHistoryRecord, 'row_id'>[] = [];
   const events: Omit<StudyAvailabilityEventRecord, 'row_id'>[] = [];
+  const observations: string[] = [];
   // A short burst of observations at the start; every study is available at the first one.
   for (let k = 0; k < 3; k++) {
     const t = new Date(burstStart + k * REFRESH_INTERVAL_MS).toISOString();
+    observations.push(t);
     for (const s of studies) {
       if (k === 0) events.push({ study_id: s.id, study_name: s.name, event_type: 'available', observed_at: t });
       history.push({ study_id: s.id, observed_at: t, payload: s as unknown as Record<string, unknown> });
     }
   }
-  // Days later Pulse runs again and finds them all gone — the `unavailable` stamps are far from the
-  // last time we actually saw each study, which is exactly what makes their durations untrustworthy.
+  // Days later Pulse runs again (one lone heartbeat, far from the burst) and finds them all gone — the
+  // `unavailable` stamps are far from the last time we actually saw each study, which is exactly what
+  // makes their durations untrustworthy.
+  observations.push(now);
   for (const s of studies) {
     events.push({ study_id: s.id, study_name: s.name, event_type: 'unavailable', observed_at: now });
   }
 
   await db.transaction(
     'rw',
-    [db.studiesLatest, db.studiesActiveSnapshot, db.serviceState, db.researchers, db.studyAvailabilityEvents, db.studiesHistory],
+    [db.studiesLatest, db.studiesActiveSnapshot, db.serviceState, db.researchers, db.studyAvailabilityEvents, db.studiesHistory, db.observationLog],
     async () => {
       await db.studiesLatest.bulkPut(studies.map((s) => ({ study_id: s.id, name: s.name, payload: s as unknown as Record<string, unknown>, last_seen_at: now })));
       await db.researchers.bulkPut(buildResearcherRecords(nowDate));
       await db.studyAvailabilityEvents.bulkAdd(events);
       await db.studiesHistory.bulkAdd(history);
+      await db.observationLog.bulkAdd(observations.map((at) => ({ at })));
       await db.serviceState.put({ id: 1, last_studies_refresh_at: now, last_studies_refresh_source: 'fake-studies', updated_at: now });
     },
   );
@@ -392,12 +401,13 @@ export async function seedSparseStudies(count = 8, seed = 7): Promise<number> {
 export async function wipeStudyData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.studiesLatest, db.studiesActiveSnapshot, db.studyAvailabilityEvents, db.studiesHistory],
+    [db.studiesLatest, db.studiesActiveSnapshot, db.studyAvailabilityEvents, db.studiesHistory, db.observationLog],
     async () => {
       await db.studiesLatest.clear();
       await db.studiesActiveSnapshot.clear();
       await db.studyAvailabilityEvents.clear();
       await db.studiesHistory.clear();
+      await db.observationLog.clear();
     },
   );
 }
@@ -405,12 +415,14 @@ export async function wipeStudyData(): Promise<void> {
 export async function clearFakeStudies(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.studiesLatest, db.studiesActiveSnapshot, db.serviceState, db.researchers, db.studyAvailabilityEvents, db.studiesHistory],
+    [db.studiesLatest, db.studiesActiveSnapshot, db.serviceState, db.researchers, db.studyAvailabilityEvents, db.studiesHistory, db.observationLog],
     async () => {
       await db.studiesLatest.where('study_id').startsWith('study-fake-').delete();
       await db.studiesActiveSnapshot.where('study_id').startsWith('study-fake-').delete();
       await db.studyAvailabilityEvents.where('study_id').startsWith('study-fake-').delete();
       await db.studiesHistory.where('study_id').startsWith('study-fake-').delete();
+      // The observation log carries no study_id to filter on, so clear it wholesale (dev-only helper).
+      await db.observationLog.clear();
       await db.researchers.bulkDelete(RESEARCHERS.map((r) => r.id));
       // Clear service state to reset to "logged out"
       await db.serviceState.delete(1);

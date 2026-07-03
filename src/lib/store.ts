@@ -7,7 +7,9 @@ import { computeStudyHistoryInsights, redundantHistoryRowIds, buildObservations,
 import {
   INSIGHTS_MAX_HISTORY_ROWS,
   INSIGHTS_MAX_EVENTS,
+  INSIGHTS_MAX_OBSERVATIONS,
   INSIGHTS_SECTION_LIMIT,
+  OBSERVATION_MIN_SPACING_MS,
   STUDY_HISTORY_RETENTION_DAYS,
 } from './constants';
 import type {
@@ -50,32 +52,57 @@ export async function setStudiesRefresh(update: StudiesRefreshUpdate): Promise<v
 
 /**
  * Load the study-history Insights view-model: price moves, fill speed, posting cadence, and reruns.
- * Reads the most-recent slice of studiesHistory + availability events (bounded — compaction keeps the
- * tables small) and computes everything in one pass so the popup holds only the compact result.
+ * Reads the most-recent slice of studiesHistory + availability events + observation-log heartbeats (all
+ * bounded — compaction keeps the tables small) and computes everything in one pass so the popup holds
+ * only the compact result.
  */
 export async function getStudyInsights(): Promise<StudyHistoryInsights> {
-  const [history, events] = await Promise.all([
+  const [history, events, observations] = await Promise.all([
     db.studiesHistory.orderBy('row_id').reverse().limit(INSIGHTS_MAX_HISTORY_ROWS).toArray(),
     db.studyAvailabilityEvents.orderBy('row_id').reverse().limit(INSIGHTS_MAX_EVENTS).toArray(),
+    db.observationLog.orderBy('id').reverse().limit(INSIGHTS_MAX_OBSERVATIONS).toArray(),
   ]);
-  return computeStudyHistoryInsights(history, events, { fastestLimit: INSIGHTS_SECTION_LIMIT });
+  return computeStudyHistoryInsights(history, events, {
+    fastestLimit: INSIGHTS_SECTION_LIMIT,
+    observationTimes: observations.map((o) => o.at),
+  });
 }
 
 /**
  * Compact studiesHistory: drop snapshots older than the retention window, then drop strictly-redundant
  * consecutive snapshots (unchanged reward/hourly/places between neighbours). Change-points and each
- * study's endpoints are always kept, so analytics are unaffected. Returns rows deleted.
+ * study's endpoints are always kept, so analytics are unaffected. Also ages out the observation log
+ * (never compacted, only aged). Returns rows deleted.
  */
 export async function pruneStudyHistory(now: Date = new Date()): Promise<number> {
   const cutoffIso = new Date(now.getTime() - STUDY_HISTORY_RETENTION_DAYS * 86_400_000).toISOString();
-  return db.transaction('rw', db.studiesHistory, async () => {
+  return db.transaction('rw', [db.studiesHistory, db.observationLog], async () => {
     const aged = (await db.studiesHistory.where('observed_at').below(cutoffIso).primaryKeys()) as number[];
     if (aged.length) await db.studiesHistory.bulkDelete(aged);
     const remaining = await db.studiesHistory.toArray();
     const redundant = redundantHistoryRowIds(remaining);
     if (redundant.length) await db.studiesHistory.bulkDelete(redundant);
-    return aged.length + redundant.length;
+
+    const agedObs = (await db.observationLog.where('at').below(cutoffIso).primaryKeys()) as number[];
+    if (agedObs.length) await db.observationLog.bulkDelete(agedObs);
+
+    return aged.length + redundant.length + agedObs.length;
   });
+}
+
+/**
+ * Record a "we observed the studies feed at this instant" heartbeat — even when the feed was empty.
+ * Downsampled: refreshes within OBSERVATION_MIN_SPACING_MS of the last heartbeat are skipped, so the
+ * log stays coarse enough to span months (within the load cap) while still dense enough that the
+ * appearance check finds a heartbeat within RELIABLE_OBSERVATION_GAP_MS before any real drop.
+ */
+export async function recordObservation(at: string): Promise<void> {
+  const last = await db.observationLog.orderBy('id').last();
+  if (last) {
+    const gap = Date.parse(at) - Date.parse(last.at);
+    if (Number.isFinite(gap) && gap >= 0 && gap < OBSERVATION_MIN_SPACING_MS) return;
+  }
+  await db.observationLog.add({ at });
 }
 
 export async function getStudiesRefresh(): Promise<StudiesRefreshState | null> {

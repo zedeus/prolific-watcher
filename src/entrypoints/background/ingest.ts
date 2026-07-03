@@ -33,11 +33,14 @@ export async function ingestStudiesResponse(
     throw error;
   }
 
-  // These touch disjoint tables so can run in parallel
+  // These touch disjoint tables so can run in parallel. recordObservation logs a durable "we were
+  // watching now" heartbeat — even for an empty feed, which writes no study history — so the insights
+  // reliability check can tell "watching, nothing there" from "not watching".
   const [, availability] = await Promise.all([
     store.storeNormalizedStudies(studies, observedAt),
     store.reconcileAvailability(studies, observedAt),
     store.setStudiesRefresh({ observed_at: observedAt, source, url, status_code: statusCode }),
+    store.recordObservation(observedAt),
   ]);
 
   return availability;

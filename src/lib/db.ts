@@ -60,6 +60,17 @@ export interface ResearcherRecord {
   submission_count: number;
 }
 
+/**
+ * A durable "we were watching at this instant" heartbeat, written on studies refreshes (incl. empty
+ * feeds) but downsampled to ~5-min spacing (see recordObservation). Unlike studiesHistory it is never
+ * compacted (only aged out), so it's the trustworthy observation timeline the insights reliability
+ * check reads (see study-history.ts).
+ */
+export interface ObservationLogRecord {
+  id?: number;
+  at: string;
+}
+
 class ProlificPulseDB extends Dexie {
   studiesLatest!: EntityTable<StudyLatestRecord, 'study_id'>;
   studiesHistory!: EntityTable<StudyHistoryRecord, 'row_id'>;
@@ -68,6 +79,7 @@ class ProlificPulseDB extends Dexie {
   serviceState!: EntityTable<ServiceStateRecord, 'id'>;
   submissions!: EntityTable<SubmissionRecord, 'submission_id'>;
   researchers!: EntityTable<ResearcherRecord, 'id'>;
+  observationLog!: EntityTable<ObservationLogRecord, 'id'>;
 
   constructor() {
     super('prolific-pulse');
@@ -81,6 +93,9 @@ class ProlificPulseDB extends Dexie {
     });
     this.version(2).stores({
       researchers: 'id, last_seen_at',
+    });
+    this.version(3).stores({
+      observationLog: '++id, at',
     });
   }
 }

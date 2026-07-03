@@ -443,6 +443,18 @@ describe('observation-aware reliability (sporadic usage)', () => {
     expect(cadence.peak_hour).toBeNull();
   });
 
+  it('the observation log rescues a drop that thin/empty-feed history would wrongly reject', () => {
+    // s is the only study in history (e.g. after an empty-feed stretch or compaction), so history alone
+    // has no observation before s appears at 11:00 → it would be dropped. The durable heartbeat log
+    // (which records every refresh, incl. empty ones) has a tick at 10:50, proving we were watching.
+    const history = denseHistory('s', 11 * 60, 11 * 60 + 10, 1);
+    const events = [evt('s', 'available', T(11, 0, 1))];
+    const logTimes = [T(10, 30, 1), T(10, 40, 1), T(10, 50, 1)];
+
+    expect(computePostingCadence(events, buildObservations(history)).total_postings).toBe(0);
+    expect(computePostingCadence(events, buildObservations(history, logTimes)).total_postings).toBe(1);
+  });
+
   it("reproduces the user's export: a batch already-present, all closed after a 6-day gap", () => {
     // 8 studies available at the first observation (17:51), all unavailable 6 days later — every
     // fill sample and every posting is unreliable → nothing usable, flagged sparse.

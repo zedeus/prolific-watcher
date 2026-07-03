@@ -149,6 +149,15 @@ export const RELIABLE_OBSERVATION_GAP_MS = 15 * 60 * 1000; // 15 minutes
 /** Hard cap on rows loaded for the Insights view (most-recent first). Compaction keeps this ample. */
 export const INSIGHTS_MAX_HISTORY_ROWS = 20_000;
 export const INSIGHTS_MAX_EVENTS = 5_000;
+/** Most-recent observation-log heartbeats loaded to reconstruct the "were we watching" timeline. */
+export const INSIGHTS_MAX_OBSERVATIONS = 30_000;
+/**
+ * Minimum spacing between recorded heartbeats — refreshes closer than this are not logged. Comfortably
+ * below RELIABLE_OBSERVATION_GAP_MS (so continuous watching still leaves a heartbeat within the trust
+ * window before any drop), but coarse enough that INSIGHTS_MAX_OBSERVATIONS covers months of active use
+ * rather than ~a week, and the ingest path writes far fewer rows.
+ */
+export const OBSERVATION_MIN_SPACING_MS = 5 * 60 * 1000; // 5 minutes
 /** How many price moves / reruns / fastest fillers the Insights panel shows per section. */
 export const INSIGHTS_SECTION_LIMIT = 6;
 /**

@@ -85,20 +85,20 @@ function byObservedAt(a: { observed_at: string }, b: { observed_at: string }): n
 //
 // Availability events are only meaningful when Pulse was actually watching across a study's life. Used
 // sporadically, the extension stamps `unavailable` the moment it *next* runs and sees a study gone —
-// which can be days after it really closed — so the raw listing duration is noise, not a fill time.
-// studiesHistory records one row per observed study per refresh, so its timestamps ARE the observation
-// timeline. We reconstruct continuity from it (works on already-recorded data, no schema change) and
+// which can be days after it really closed — so the raw listing duration is noise, not a fill time. We
 // drop any interval/event whose surrounding observation gap is too large to trust.
 //
-// Two known limits of reconstructing the timeline from studiesHistory, both CONSERVATIVE (they drop
-// real samples, never invent bad ones): (1) an empty-feed refresh writes no history row, and (2)
-// retention compaction thins dense interior observations over time. Both can make the *global*
-// timeline (used by the appearance check → posting cadence AND rerun detection) look gappier than it
-// was, so old postings / reappearances may be under-counted. The close check (fill speed, "typically
-// listed") uses each study's
-// own last-before-close observation, which compaction keeps as an endpoint, so it stays accurate. A
-// durable per-refresh heartbeat store would make the appearance side exact — deferred; today it
-// degrades gracefully. `sparse` is keyed on the close side so this never triggers a false warning.
+// The observation timeline (`buildObservations`) is unioned from two sources:
+//   • the durable observation log — a heartbeat every few minutes (downsampled), INCLUDING empty-feed
+//     refreshes, never compacted (only aged out). This is the authoritative "were we watching" signal
+//     the appearance check (posting cadence + rerun detection) reads.
+//   • studiesHistory observed_at — one row per observed study per refresh; covers data recorded before
+//     the log existed, but is lossy (empty refreshes write no row; compaction thins interior rows).
+// The close check (fill speed, "typically listed") only needs each study's own last-before-close
+// observation, which compaction keeps as an endpoint, so it's accurate from history alone. Where the
+// log doesn't reach (older than its load window / pre-log data) appearances fall back to history —
+// CONSERVATIVELY (may under-count, never invents a bad sample). `sparse` is keyed on the close side, so
+// a thin timeline never triggers a false warning.
 // ──────────────────────────────────────────────────────────────
 
 export interface Observations {
@@ -108,9 +108,16 @@ export interface Observations {
   byStudy: Map<string, number[]>;
 }
 
-export function buildObservations(history: StudyHistoryRecord[]): Observations {
+export function buildObservations(history: StudyHistoryRecord[], globalTimes: string[] = []): Observations {
   const all = new Set<number>();
   const byStudy = new Map<string, number[]>();
+  // The durable observation log (globalTimes) is the authoritative "were we watching" timeline — it
+  // includes empty-feed refreshes and isn't thinned by compaction. History observed_at are unioned in
+  // too so pre-log data still contributes what it can.
+  for (const at of globalTimes) {
+    const t = parseDate(at)?.getTime();
+    if (t !== undefined) all.add(t);
+  }
   for (const row of history) {
     const t = parseDate(row.observed_at)?.getTime();
     if (t === undefined) continue;
@@ -255,9 +262,9 @@ interface StudyClose {
  * We take the first *reliable* close (not the first close then a check): a study that appeared while
  * Pulse was away but was watched to its close on a later listing still contributes a real sample. The
  * close side uses only each study's own observations, whose last-before-close survives compaction as an
- * endpoint. (The appearance side, used by posting cadence + rerun detection, needs the global timeline —
- * see the module note on how that degrades as history is compacted.) No `observations` → every close is
- * reliable.
+ * endpoint. (The appearance side, used by posting cadence + rerun detection, needs the global timeline,
+ * which is fed by the durable observation log — see the module note.) No `observations` → every close
+ * is reliable.
  */
 function reliableCloses(
   intervals: Map<string, ListingInterval[]>,
@@ -639,6 +646,8 @@ export function redundantHistoryRowIds(history: StudyHistoryRecord[]): number[] 
 
 export interface StudyHistoryInsightsOptions {
   fastestLimit?: number;
+  /** Durable observation-log heartbeats (studiesHistory misses empty refreshes + is compacted). */
+  observationTimes?: string[];
 }
 
 export interface InsightsDataQuality {
@@ -670,7 +679,7 @@ export function computeStudyHistoryInsights(
   opts: StudyHistoryInsightsOptions = {},
 ): StudyHistoryInsights {
   const meta = buildStudyMeta(history);
-  const observations = buildObservations(history);
+  const observations = buildObservations(history, opts.observationTimes);
   const price_changes = computePriceChanges(history);
   const fill_speed = computeFillSpeed(events, observations);
   const fastest_filling = fastestFillingStudies(events, meta, opts.fastestLimit ?? 5, observations);

@@ -55,6 +55,7 @@ beforeEach(async () => {
   await db.studyAvailabilityEvents.clear();
   await db.serviceState.clear();
   await db.submissions.clear();
+  await db.observationLog.clear();
 });
 
 // --- Service State ---
@@ -758,6 +759,30 @@ describe('getStudyInsights', () => {
     expect(insights.empty).toBe(true);
   });
 
+  it('recordObservation heartbeat lets getStudyInsights count a drop history alone would reject', async () => {
+    // Only study s is in history (as after an empty-feed stretch), so it has no prior observation and
+    // its 11:00 appearance would be dropped — until a heartbeat proves we were watching at 10:50.
+    await db.studiesHistory.bulkAdd([
+      { study_id: 's', observed_at: '2026-03-01T11:00:00Z', payload: { reward: { amount: 500, currency: 'GBP' } } },
+      { study_id: 's', observed_at: '2026-03-01T11:05:00Z', payload: { reward: { amount: 500, currency: 'GBP' } } },
+    ]);
+    await db.studyAvailabilityEvents.add({ study_id: 's', study_name: 'S', event_type: 'available', observed_at: '2026-03-01T11:00:00Z' });
+
+    expect((await store.getStudyInsights()).posting.total_postings).toBe(0);
+    await store.recordObservation('2026-03-01T10:50:00Z');
+    expect((await store.getStudyInsights()).posting.total_postings).toBe(1);
+  });
+
+  it('recordObservation downsamples heartbeats to at most one per OBSERVATION_MIN_SPACING_MS (5 min)', async () => {
+    await store.recordObservation('2026-03-01T10:00:00Z'); // first → recorded
+    await store.recordObservation('2026-03-01T10:02:00Z'); // +2 min from last recorded → skipped
+    await store.recordObservation('2026-03-01T10:04:00Z'); // +4 min from last recorded (10:00) → skipped
+    await store.recordObservation('2026-03-01T10:06:00Z'); // +6 min from 10:00 → recorded
+    await store.recordObservation('2026-03-01T10:06:30Z'); // +30s from 10:06 → skipped
+    const rows = await db.observationLog.toArray();
+    expect(rows.map((r) => r.at)).toEqual(['2026-03-01T10:00:00Z', '2026-03-01T10:06:00Z']);
+  });
+
   it('tolerates malformed history / event rows in the DB', async () => {
     await db.studiesHistory.bulkAdd([
       { study_id: 's1', observed_at: '2026-03-01T10:00:00Z', payload: null as unknown as Record<string, unknown> },
@@ -802,5 +827,16 @@ describe('pruneStudyHistory', () => {
     await store.pruneStudyHistory(now);
     const remaining = await db.studiesHistory.toArray();
     expect(remaining.map((r) => r.observed_at)).toEqual([recent]);
+  });
+
+  it('ages out old observation-log heartbeats past the retention window', async () => {
+    const now = new Date('2026-06-01T00:00:00Z');
+    const old = new Date(now.getTime() - 200 * 86_400_000).toISOString();
+    const recent = new Date(now.getTime() - 86_400_000).toISOString();
+    await store.recordObservation(old);
+    await store.recordObservation(recent);
+    await store.pruneStudyHistory(now);
+    const remaining = await db.observationLog.toArray();
+    expect(remaining.map((o) => o.at)).toEqual([recent]);
   });
 });
