@@ -1,0 +1,20 @@
+tests-wdio/setup-login.js
+  s_ab93c3cbf55aa5::t_cf8d28d05a4499 9-11
+  s_ab93c3cbf55aa5::t_3d24719523cbc1 90-99,102-103,105-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6e7c14bc449854e204e3ee870ad91eea0880a0df",
+  "prompts": {},
+  "sessions": {
+    "s_ab93c3cbf55aa5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a4db73d-50c5-4ccb-924f-3ed35842a114",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
