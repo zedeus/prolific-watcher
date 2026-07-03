@@ -1,0 +1,27 @@
+tests-wdio/helpers/shared-setup.js
+  s_ab93c3cbf55aa5::t_2b51a15e340a49 68-70,74,76,80
+  s_ab93c3cbf55aa5::t_424ae312e001d5 10,15
+  s_ab93c3cbf55aa5::t_b5197aa1e5a696 60
+  s_ab93c3cbf55aa5::t_fbd6c0a6f29719 71-73,77-79,81-83
+tests-wdio/wdio.chrome.conf.js
+  s_ab93c3cbf55aa5::t_33cd5ae4daf867 49-53
+tests-wdio/helpers/chrome-extension.js
+  s_ab93c3cbf55aa5::t_5f0e97817f73d1 24-28,34-36,41-58
+  s_ab93c3cbf55aa5::t_afced828d04091 59-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f7668afd1bf5e2956642c699bfdc14ff9b7f95c8",
+  "prompts": {},
+  "sessions": {
+    "s_ab93c3cbf55aa5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a4db73d-50c5-4ccb-924f-3ed35842a114",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
