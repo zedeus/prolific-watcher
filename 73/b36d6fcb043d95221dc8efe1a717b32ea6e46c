@@ -1,0 +1,78 @@
+src/lib/__tests__/format.test.ts
+  s_ab93c3cbf55aa5::t_2951ccbe91332f 2-7
+  s_ab93c3cbf55aa5::t_b7d6d2cdacb78e 27-93
+src/lib/__tests__/health.test.ts
+  s_ab93c3cbf55aa5::t_cd398d61261773 191-260
+  s_ab93c3cbf55aa5::t_f467c0b00cb09e 1-190
+src/lib/store.ts
+  s_ab93c3cbf55aa5::t_9787c692c3c344 94-110
+  s_ab93c3cbf55aa5::t_695c247b0c96b5 93
+src/entrypoints/popup/App.svelte
+  s_ab93c3cbf55aa5::t_ff0c3a110da1fc 53
+  s_ab93c3cbf55aa5::t_fd1a2c94f10adf 367
+src/entrypoints/background/health.ts
+  s_ab93c3cbf55aa5::t_2fcbf6fd65c82f 1-179
+src/lib/__dev__/dev-helpers.ts
+  s_ab93c3cbf55aa5::t_c0d3f679e1557c 2,13,27
+tests-wdio/wdio.visual.conf.js
+  s_ab93c3cbf55aa5::t_4b26f411eb2434 37
+tests-wdio/specs/12-resilience-status.js
+  s_ab93c3cbf55aa5::t_253b17000ef370 1-114
+src/lib/__dev__/fake-studies.ts
+  s_ab93c3cbf55aa5::t_0e48ae578c7f0e 336-341,344-349,355-375
+  s_ab93c3cbf55aa5::t_87870f2f132430 376
+src/lib/constants.ts
+  s_ab93c3cbf55aa5::t_fc9a7d00c64bed 176-209
+src/lib/types.ts
+  s_ab93c3cbf55aa5::t_7209d119e46ce2 159-170
+src/lib/__tests__/store.test.ts
+  s_ab93c3cbf55aa5::t_fd8dcaa645e83a 843-881
+src/entrypoints/background/index.ts
+  s_ab93c3cbf55aa5::t_9062de19baf5e6 937-942,944
+  s_ab93c3cbf55aa5::t_cb94a782fabfa7 1145-1147
+  s_ab93c3cbf55aa5::t_6ec3439895bda3 978,981,984-985
+  s_ab93c3cbf55aa5::t_61530b507df64d 1973-1980
+  s_ab93c3cbf55aa5::t_12e05c98d13921 1158-1160
+  s_ab93c3cbf55aa5::t_7b7c08ab48a81a 1144,1179-1184,1191
+  s_ab93c3cbf55aa5::t_15fe2175d0405e 1192
+  s_ab93c3cbf55aa5::t_8af7a761f8dcdb 876-877,893,896-898
+  s_ab93c3cbf55aa5::t_7d80493db11d0b 1972,1984
+  s_ab93c3cbf55aa5::t_76d0e469659333 2713-2715
+  s_ab93c3cbf55aa5::t_ed4170c8729a1c 145
+  s_ab93c3cbf55aa5::t_0236b0eaeed74d 995-1001
+  s_ab93c3cbf55aa5::t_328a1ee0ac320b 1161
+  s_ab93c3cbf55aa5::t_fe871c46913cfe 2670-2671
+  s_ab93c3cbf55aa5::t_f74c6674ef8a48 866-875,878-892,894-895,899-923,925-936,943,945-977,979-980,982-983,986-994,1002-1048,1053-1063
+  s_ab93c3cbf55aa5::t_678c6cbfe420e6 2110-2112,2114-2115,2118
+  s_ab93c3cbf55aa5::t_d8287a257cba61 89
+  s_ab93c3cbf55aa5::t_8139dabdc9a40b 1148
+  s_ab93c3cbf55aa5::t_f375d0ca457811 1137
+  s_ab93c3cbf55aa5::t_03159905222a3d 2414-2421
+  s_ab93c3cbf55aa5::t_a208d31eecd9fb 65-74,81-87,90
+  s_ab93c3cbf55aa5::t_79f48f494acf88 1070-1073
+  s_ab93c3cbf55aa5::t_55b2f17316aa48 924
+  s_ab93c3cbf55aa5::t_7c2d6b4e364816 2119
+  s_ab93c3cbf55aa5::t_89f497b4aa36a2 141-144,146-149
+  s_ab93c3cbf55aa5::t_6c55aafa2e94cc 1106-1108
+  s_ab93c3cbf55aa5::t_e4b2342d1ae770 1049-1052
+  s_ab93c3cbf55aa5::t_5775cb8c405ab9 88
+  s_ab93c3cbf55aa5::t_90847b1c5e45ac 1731-1732
+src/lib/format.ts
+  s_ab93c3cbf55aa5::t_0f55a75287283b 320-352
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "73b36d6fcb043d95221dc8efe1a717b32ea6e46c",
+  "prompts": {},
+  "sessions": {
+    "s_ab93c3cbf55aa5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4a4db73d-50c5-4ccb-924f-3ed35842a114",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
