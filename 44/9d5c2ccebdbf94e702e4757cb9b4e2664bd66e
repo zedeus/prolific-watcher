@@ -1,0 +1,23 @@
+tests-wdio/specs/11-earnings-assertions.js
+  s_fb370c0dd5cbf1::t_c8e8c94f90c42b 228-232
+  s_fb370c0dd5cbf1::t_2bf34224aca84e 1-104,111-227,233-424
+  s_fb370c0dd5cbf1::t_d85b008805e637 105-110
+tests-wdio/wdio.visual.conf.js
+  s_fb370c0dd5cbf1::t_afb4fc194fa450 36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "449d5c2ccebdbf94e702e4757cb9b4e2664bd66e",
+  "prompts": {},
+  "sessions": {
+    "s_fb370c0dd5cbf1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0daa4e8a-5f28-40a3-9330-ba5a2477c31f",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
