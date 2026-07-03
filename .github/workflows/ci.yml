@@ -37,3 +37,38 @@ jobs:
       - run: npx wxt build -b chrome
 
       - run: npx wxt build -b firefox
+
+  e2e-visual:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            src/package-lock.json
+            tests-wdio/package-lock.json
+
+      - name: Install extension deps
+        run: npm ci
+        working-directory: src
+
+      - name: Install test deps
+        run: npm ci
+        working-directory: tests-wdio
+
+      - name: Run visual e2e tests (Firefox, headless)
+        run: HEADLESS=1 npx wdio run wdio.visual.conf.js
+        working-directory: tests-wdio
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-screenshots
+          path: tests-wdio/screenshots/
+          retention-days: 7
+          if-no-files-found: ignore
