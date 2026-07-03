@@ -1,0 +1,22 @@
+.github/workflows/ci.yml
+  s_fb370c0dd5cbf1::t_59ff53e2948341 34-36
+src/lib/__tests__/earnings.bench.ts
+  s_fb370c0dd5cbf1::t_a2b4d534cfc529 1-69,71-90
+  s_fb370c0dd5cbf1::t_84c6d0adc50180 70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bd20b655630b6dfdc34a0a3c92691e4f02655e28",
+  "prompts": {},
+  "sessions": {
+    "s_fb370c0dd5cbf1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0daa4e8a-5f28-40a3-9330-ba5a2477c31f",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
