@@ -1,0 +1,48 @@
+src/entrypoints/background/ingest.ts
+  s_59cfc767e9f36e::t_8498996cdc0c64 36-38,43
+src/lib/__tests__/store.test.ts
+  s_59cfc767e9f36e::t_79f070d33c3fd9 821-831
+  s_59cfc767e9f36e::t_fe2150fc75af9d 762-775
+  s_59cfc767e9f36e::t_d3b8f1e0df15ec 58
+src/lib/store.ts
+  s_59cfc767e9f36e::t_2e42a95a90dcec 73-74,78,84-88,92-94
+  s_59cfc767e9f36e::t_28d90c019300ae 10
+  s_59cfc767e9f36e::t_bfd500cd38b0a0 54-56,59,62,64-67
+  s_59cfc767e9f36e::t_811a772e2858e0 95-96
+src/lib/study-history.ts
+  s_59cfc767e9f36e::t_3c45a1ae5377c6 265-267
+  s_59cfc767e9f36e::t_d7672550e77448 111,114-120
+  s_59cfc767e9f36e::t_4aa5d2848fc8b6 88,91-101
+  s_59cfc767e9f36e::t_9a234dac3a4c30 649-650
+  s_59cfc767e9f36e::t_2bc8cff3a74a1a 682
+src/lib/db.ts
+  s_59cfc767e9f36e::t_98c0466f29bc13 63-72,81,96-97
+  s_59cfc767e9f36e::t_c3c2fb311de0da 98
+src/lib/__tests__/study-history.test.ts
+  s_59cfc767e9f36e::t_4132da242ea094 446-457
+src/lib/__dev__/fake-studies.ts
+  s_59cfc767e9f36e::t_16de9d5f82c9a0 255,263
+  s_59cfc767e9f36e::t_4b055b3f7d3148 404,410,418,424-425
+  s_59cfc767e9f36e::t_79037460e7f0bf 360,364,370-373,380,386
+  s_59cfc767e9f36e::t_bab0541090d1c2 288
+  s_59cfc767e9f36e::t_0f1580dbc0ff1a 314,321
+  s_59cfc767e9f36e::t_b5e51cae768575 196
+src/lib/constants.ts
+  s_59cfc767e9f36e::t_55eb69a5f4c00b 152-153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e4f25373865421ff8e1bad6580bed1fb70d6b279",
+  "prompts": {},
+  "sessions": {
+    "s_59cfc767e9f36e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20995a8b-7b2c-4911-b357-1c20160efc2e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
