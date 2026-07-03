@@ -31,6 +31,9 @@ jobs:
 
       - run: npx vitest run
 
+      - name: Benchmark earnings rollups
+        run: npx vitest bench --run
+
       - run: npx wxt build -b chrome
 
       - run: npx wxt build -b firefox
