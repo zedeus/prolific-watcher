@@ -1,0 +1,82 @@
+src/entrypoints/background/settings.ts
+  s_cbd2eaa2b63121::t_72eb00dd0a3436 110-139
+  s_cbd2eaa2b63121::t_6368cfc83220f8 33-34,39
+  s_cbd2eaa2b63121::t_4eb4b26284ec87 46
+  s_cbd2eaa2b63121::t_a0436ef5a79b18 10-11
+  s_cbd2eaa2b63121::t_38b13995cbc6b6 184-185,191-193
+  s_cbd2eaa2b63121::t_f4f4f0ed635e21 157
+src/entrypoints/background/domain.ts
+  s_cbd2eaa2b63121::t_35c5a096b01de6 2
+  s_cbd2eaa2b63121::t_56a71c8e2c3d2d 83-95
+  s_cbd2eaa2b63121::t_e31068d7ad8c16 97,101-103,110,113-114,117-126,148
+  s_cbd2eaa2b63121::t_0164c0a377d3ce 146-147
+  s_cbd2eaa2b63121::t_bac3b1db11fbc7 165-166
+  s_cbd2eaa2b63121::t_ba6979bc8b0864 149
+src/lib/priority-filter.ts
+  s_cbd2eaa2b63121::t_225a87f426a75c 10
+  s_cbd2eaa2b63121::t_c7ad2220fbf966 31,33,38-40
+src/lib/constants.ts
+  s_cbd2eaa2b63121::t_ad7d0143538033 52,60-61,66-70
+src/lib/types.ts
+  s_cbd2eaa2b63121::t_6c77bc28f58cac 101-102,107-109
+src/entrypoints/popup/App.svelte
+  s_cbd2eaa2b63121::t_93821ce04a8d6c 836
+src/lib/__tests__/fuzz.test.ts
+  s_cbd2eaa2b63121::t_97de4cd7f39715 181,184,190
+src/entrypoints/popup/components/SettingsPanel.svelte
+  s_cbd2eaa2b63121::t_cc9775f489162b 4,7
+  s_cbd2eaa2b63121::t_c4d87a9d812472 1084,1093,1102,1108
+  s_cbd2eaa2b63121::t_1063c088d893ce 1058,1070
+  s_cbd2eaa2b63121::t_de7a5f02119212 499-500,504-505
+  s_cbd2eaa2b63121::t_fd1d92a2cbee97 439-441,445,447-448
+  s_cbd2eaa2b63121::t_68689d8e6c8a3a 1238,1240-1242,1245,1247,1254
+  s_cbd2eaa2b63121::t_733b1a1e37b227 173,185-190,193-196,200-203
+  s_cbd2eaa2b63121::t_cb4d993f47e697 204
+  s_cbd2eaa2b63121::t_e6540da9f6071a 205,401-413,418-420,431-438,442-444,446,449-452,463,483
+  s_cbd2eaa2b63121::t_8890bbbb623ec2 371
+  s_cbd2eaa2b63121::t_336780d167dd00 974-984
+  s_cbd2eaa2b63121::t_6f54d110f696a9 77
+  s_cbd2eaa2b63121::t_c465b77b3e5d12 53
+  s_cbd2eaa2b63121::t_6ca513198383bd 1050-1057,1059-1069,1071-1083,1085-1092,1094-1101,1103-1107,1109-1113,1121-1125,1127-1133
+  s_cbd2eaa2b63121::t_2204f11619ee40 506
+  s_cbd2eaa2b63121::t_d075cd421407dc 1120,1126
+  s_cbd2eaa2b63121::t_6be0ec1fa03eb9 39-43
+  s_cbd2eaa2b63121::t_69d2fbe648b3a7 1233-1237,1239,1243-1244,1246,1248-1253,1255-1257
+  s_cbd2eaa2b63121::t_64b5843b21e50f 206
+src/lib/__tests__/settings.test.ts
+  s_cbd2eaa2b63121::t_e7cac1275048b5 258-310
+  s_cbd2eaa2b63121::t_425902ff8ce4a8 54-55,60,67
+  s_cbd2eaa2b63121::t_e58209216d369c 311-414
+src/entrypoints/background/index.ts
+  s_cbd2eaa2b63121::t_9a6cb2699aa075 170-171,176,182
+  s_cbd2eaa2b63121::t_67c6220576e4c2 41,49-50,54
+  s_cbd2eaa2b63121::t_82af2fa1d8ef29 1472-1474
+  s_cbd2eaa2b63121::t_3021b2831624ea 1475
+tests-wdio/specs/visual-settings.js
+  s_cbd2eaa2b63121::t_bda4fd5752d01c 35,43-45,48,53,61-63,105-107,110-113,115,119-129
+  s_cbd2eaa2b63121::t_b74348fb07d0e5 59-60
+  s_cbd2eaa2b63121::t_7696bd21a0bd4e 81,83,95-104,108-109,114,116-118
+  s_cbd2eaa2b63121::t_81f43ad988cdf4 82,84-94
+src/lib/__tests__/domain.test.ts
+  s_cbd2eaa2b63121::t_b5fa88dc997ece 580-589
+  s_cbd2eaa2b63121::t_739472d89de604 291-393,560-579
+  s_cbd2eaa2b63121::t_e99e4bdf0ae6d3 61,63,68-70
+  s_cbd2eaa2b63121::t_abf3d7d9de2e7b 5
+  s_cbd2eaa2b63121::t_5d0c36174ed212 394-559
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ba5c648af7d6fe7e84cdfdda108c14c72a03692b",
+  "prompts": {},
+  "sessions": {
+    "s_cbd2eaa2b63121": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "81163204-5d74-4e0a-b28d-a9be0446eec0",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
