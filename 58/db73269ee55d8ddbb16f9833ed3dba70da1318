@@ -1,0 +1,23 @@
+src/entrypoints/popup/App.svelte
+  s_ffcd599f470644::t_a00f71112f1f0a 1040-1041,1050
+  s_ffcd599f470644::t_816a6e5c14116c 910-912,914
+  s_ffcd599f470644::t_753599ef967172 909,913
+src/entrypoints/popup/components/ResearcherProfileCard.svelte
+  s_ffcd599f470644::t_056e3454e1dcf9 118,121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "58db73269ee55d8ddbb16f9833ed3dba70da1318",
+  "prompts": {},
+  "sessions": {
+    "s_ffcd599f470644": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4c6b0f6-b3ad-4ce9-b5e3-526c34740c35",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
