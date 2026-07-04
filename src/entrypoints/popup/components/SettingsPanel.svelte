@@ -6,6 +6,7 @@
   import { createDefaultPriorityFilter } from '../../../lib/priority-filter';
   import { studyMatchesPriorityFilter, studyRewardMajor, studyHourlyRewardMajor, studyEstimatedMinutes } from '../../background/domain';
   import ResearcherPicker from './ResearcherPicker.svelte';
+  import TelegramPreview from './TelegramPreview.svelte';
   import type { ResearcherProfile } from '../../../lib/researcher-profile';
   import type { EarningsPrefs } from '../../../lib/earnings-prefs';
   import { listCurrencies } from '../../../lib/earnings';
@@ -1540,6 +1541,11 @@
           />
         </div>
 
+        <div class="text-[10px] text-base-content/40 leading-snug mt-1.5 flex gap-1.5">
+          <span aria-hidden="true">🔄</span>
+          <span>When a study fills up or disappears, its alert is updated to show it's no longer available — so you never chase a study that's already gone.</span>
+        </div>
+
 
         <div class="mt-1 pt-2 border-t border-base-300">
           <div class="text-[12.5px] text-base-content/70 font-medium mb-1.5">Message includes</div>
@@ -1555,6 +1561,8 @@
               </label>
             {/each}
           </div>
+
+          <TelegramPreview format={tg.message_format} />
         </div>
       </div>
       {/if}

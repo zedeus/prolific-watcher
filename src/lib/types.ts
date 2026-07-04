@@ -129,6 +129,20 @@ export interface TelegramSettings {
   message_format: TelegramMessageFormatOptions;
 }
 
+/**
+ * A Telegram notification we've sent for a study, tracked so we can edit it later
+ * (e.g. mark it "no longer available" once the study departs the feed). Keyed by study_id.
+ */
+export interface TelegramSentMessage {
+  study_id: string;
+  chat_id: string;
+  message_id: number;
+  sent_at: number;
+  /** Trimmed study snapshot (fields the formatter reads) so the message can be re-rendered. */
+  study: Study;
+  filter_name: string | null;
+}
+
 export interface RefreshPolicy {
   minimum_delay_seconds: number;
   average_delay_seconds: number;

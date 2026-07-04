@@ -1,7 +1,17 @@
 import { browser } from 'wxt/browser';
-import type { Study, TelegramSettings, TelegramMessageFormatOptions, PriorityFilter } from '../../lib/types';
-import { TELEGRAM_SETTINGS_KEY, TELEGRAM_API_BASE_URL } from '../../lib/constants';
-import { formatMoneyFromMinorUnits, formatDurationMinutes, compactText, studyUrlFromId, toUserErrorMessage, escapeHTML, stripHTML, formatStudyLabel } from '../../lib/format';
+import type { TelegramSettings, TelegramMessageFormatOptions } from '../../lib/types';
+import { TELEGRAM_SETTINGS_KEY, TELEGRAM_API_BASE_URL, TELEGRAM_SENT_MESSAGES_KEY } from '../../lib/constants';
+import { toUserErrorMessage, nowIso } from '../../lib/format';
+import {
+  formatTelegramMessage,
+  buildStudyReplyMarkup,
+  buildSampleStudy,
+  type ReplyMarkup,
+  type SentMessageMap,
+} from '../../lib/telegram-format';
+
+// Re-export the shared formatter so existing background imports keep working.
+export { formatTelegramMessage, buildStudyReplyMarkup } from '../../lib/telegram-format';
 
 const BOT_TOKEN_REGEX = /^\d{5,16}:[A-Za-z0-9_-]{35}$/;
 
@@ -67,74 +77,24 @@ function classifyTelegramError(status: number, description: string): string {
   return description || `HTTP ${status}`;
 }
 
-function formatDetail(value: string): string | null {
-  const v = value.trim();
-  return v && v !== 'n/a' ? v : null;
+// ─────────────────────────────────────────────────────────────
+// Sent-message tracking storage (issue #27)
+// ─────────────────────────────────────────────────────────────
+
+export async function loadSentTelegramMessages(): Promise<SentMessageMap> {
+  const data = await browser.storage.local.get(TELEGRAM_SENT_MESSAGES_KEY);
+  const raw = data[TELEGRAM_SENT_MESSAGES_KEY];
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as SentMessageMap) : {};
 }
 
-export function formatTelegramMessage(
-  study: Study,
-  filter: PriorityFilter | null,
-  format: TelegramMessageFormatOptions,
-): string {
-  const lines: string[] = [];
-  const title = escapeHTML(study.name || 'Untitled Study');
-  lines.push(filter ? `<b>❗️${title}</b>` : `<b>${title}</b>`);
-
-  const details: string[] = [];
-  if (format.include_reward) {
-    const v = formatDetail(formatMoneyFromMinorUnits(study.reward));
-    if (v) details.push(escapeHTML(v));
-  }
-  if (format.include_hourly_rate) {
-    const v = formatDetail(formatMoneyFromMinorUnits(study.average_reward_per_hour));
-    if (v) details.push(`${escapeHTML(v)}/hr`);
-  }
-  if (format.include_duration) {
-    const v = formatDetail(formatDurationMinutes(study.estimated_completion_time));
-    if (v) details.push(escapeHTML(v));
-  }
-  if (format.include_places) {
-    const places = Number(study.places_available);
-    if (Number.isFinite(places)) details.push(`${places} place${places !== 1 ? 's' : ''}`);
-  }
-  if (format.include_researcher && study.researcher?.name) details.push(escapeHTML(study.researcher.name));
-  if (details.length) lines.push(details.join(' · '));
-
-  if (format.include_tags) {
-    const tags: string[] = [];
-    const typeLabel = formatStudyLabel(study.study_labels, study.ai_inferred_study_labels);
-    if (typeLabel) tags.push(escapeHTML(typeLabel));
-    if (study.max_submissions_per_participant > 1) tags.push('Multi-submit');
-    if (study.is_custom_screening) tags.push('Screening');
-    if (tags.length) lines.push(tags.join(' · '));
-  }
-
-  if (format.include_description && study.description) {
-    const plain = stripHTML(study.description);
-    if (plain) lines.push(`<i>${escapeHTML(compactText(plain, 200))}</i>`);
-  }
-
-  if (filter) {
-    lines.push(`<i>Filter: ${escapeHTML(filter.name)}</i>`);
-  }
-
-  return lines.join('\n');
-}
-
-type InlineKeyboard = { text: string; url: string }[][];
-type ReplyMarkup = { inline_keyboard: InlineKeyboard };
-
-export function buildStudyReplyMarkup(
-  study: Study,
-  format: TelegramMessageFormatOptions,
-): ReplyMarkup | undefined {
-  if (!format.include_link || !study.id) return undefined;
-  return { inline_keyboard: [[{ text: '📋 Open study', url: studyUrlFromId(study.id) }]] };
+export async function saveSentTelegramMessages(map: SentMessageMap): Promise<void> {
+  await browser.storage.local.set({ [TELEGRAM_SENT_MESSAGES_KEY]: map });
 }
 
 export interface SendTelegramResult {
   ok: boolean;
+  /** Telegram message id of the sent message, when available (used for later edits). */
+  message_id?: number;
   error?: string;
   description?: string;
 }
@@ -169,7 +129,8 @@ export async function sendTelegramMessage(
     const result = await response.json();
 
     if (result.ok) {
-      return { ok: true };
+      const messageId = Number(result.result?.message_id);
+      return { ok: true, message_id: Number.isFinite(messageId) ? messageId : undefined };
     }
 
     const description = String(result.description || '');
@@ -183,6 +144,65 @@ export async function sendTelegramMessage(
       ok: false,
       error: toUserErrorMessage(error),
     };
+  }
+}
+
+export interface EditTelegramResult {
+  ok: boolean;
+  /** The message no longer exists on Telegram's side — caller should drop it from tracking. */
+  gone?: boolean;
+  /** Transient failure (rate limit / network) — the edit is worth retrying on a later refresh. */
+  retriable?: boolean;
+  error?: string;
+  description?: string;
+}
+
+/**
+ * Edit a previously-sent message's text and reply markup. Telegram treats "message is not modified"
+ * as success (idempotent) and "message to edit not found" / "message can't be edited" as gone.
+ * Rate limits (429) and network errors are flagged `retriable` so the caller can try again later.
+ */
+export async function editTelegramMessage(
+  botToken: string,
+  chatId: string,
+  messageId: number,
+  text: string,
+  replyMarkup?: ReplyMarkup,
+): Promise<EditTelegramResult> {
+  if (!botToken || !chatId || !messageId || !text) {
+    return { ok: false, error: 'Missing bot token, chat ID, message ID, or text' };
+  }
+
+  try {
+    const payload: Record<string, unknown> = {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+    };
+    if (replyMarkup) payload.reply_markup = replyMarkup;
+
+    const response = await fetch(`${TELEGRAM_API_BASE_URL}${botToken}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await response.json();
+    if (result.ok) return { ok: true };
+
+    const description = String(result.description || '');
+    const lower = description.toLowerCase();
+    if (lower.includes('not modified')) return { ok: true };
+    if (lower.includes('not found') || lower.includes("can't be edited") || lower.includes('cant be edited')) {
+      return { ok: false, gone: true, description };
+    }
+    const retriable = response.status === 429 || response.status >= 500;
+    return { ok: false, retriable, error: classifyTelegramError(response.status, description), description };
+  } catch (error) {
+    // Network/transport failure — retry on a later refresh.
+    return { ok: false, retriable: true, error: toUserErrorMessage(error) };
   }
 }
 
@@ -226,34 +246,7 @@ export async function sendTelegramTestMessage(
   chatId: string,
   format: TelegramMessageFormatOptions,
 ): Promise<SendTelegramResult> {
-  const sampleStudy: Study = {
-    id: 'sample000000000000000000',
-    name: 'Sample Study — Test Notification',
-    study_type: 'SINGLE',
-    is_custom_screening: false,
-    date_created: new Date().toISOString(),
-    published_at: new Date().toISOString(),
-    total_available_places: 50,
-    places_taken: 12,
-    places_available: 38,
-    reward: { amount: 450, currency: 'GBP' },
-    average_reward_per_hour: { amount: 900, currency: 'GBP' },
-    max_submissions_per_participant: 1,
-    researcher: { id: 'r1', name: 'Dr. Example', country: 'GB' },
-    description: 'This is a test notification from Prolific Pulse to preview your message format.',
-    estimated_completion_time: 15,
-    device_compatibility: ['desktop'],
-    peripheral_requirements: [],
-    maximum_allowed_time: 1800,
-    average_completion_time_in_seconds: 720,
-    is_confidential: false,
-    is_ongoing_study: false,
-    pii_enabled: false,
-    study_labels: [],
-    ai_inferred_study_labels: [],
-    previous_submission_count: 0,
-  };
-
+  const sampleStudy = buildSampleStudy(nowIso());
   return sendTelegramMessage(
     botToken, chatId,
     formatTelegramMessage(sampleStudy, null, format),

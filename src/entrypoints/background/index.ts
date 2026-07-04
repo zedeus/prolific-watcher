@@ -1,7 +1,7 @@
 import { browser } from 'wxt/browser';
 import { nowIso, toUserErrorMessage, deriveSyncStatusMessage, isTransientStatusMessage } from '../../lib/format';
 import { normalizeStudy } from '../../lib/normalize';
-import type { PriorityFilter, Study, TelegramSettings } from '../../lib/types';
+import type { PriorityFilter, Study, TelegramSettings, TelegramSentMessage } from '../../lib/types';
 import type { SoundType } from '../../lib/constants';
 import {
   ingestStudiesResponse,
@@ -59,6 +59,8 @@ import {
   MAX_PRIORITY_ACTION_SEEN_STUDIES,
   PRIORITY_ALERT_COOLDOWN_MS,
   TELEGRAM_NOTIFY_COOLDOWN_MS,
+  TELEGRAM_SENT_MESSAGES_MAX,
+  TELEGRAM_SENT_MESSAGES_TTL_MS,
   DEFAULT_PRIORITY_ALERT_SOUND_TYPE,
   DEFAULT_PRIORITY_ALERT_SOUND_VOLUME,
   MIN_PRIORITY_ALERT_SOUND_VOLUME,
@@ -127,9 +129,21 @@ import {
   sendTelegramMessage,
   sendTelegramTestMessage,
   verifyTelegramBot,
+  editTelegramMessage,
+  loadSentTelegramMessages,
+  saveSentTelegramMessages,
+} from './telegram';
+import {
   formatTelegramMessage,
   buildStudyReplyMarkup,
-} from './telegram';
+  emptyReplyMarkup,
+  trimStudyForTelegram,
+  addSentMessages,
+  pruneSentMessages,
+  selectDepartedTracked,
+  removeSentMessages,
+  type SentMessageMap,
+} from '../../lib/telegram-format';
 
 export default defineBackground({
   main() {
@@ -1536,31 +1550,104 @@ export default defineBackground({
     }
 
     let cachedTelegramSettings: TelegramSettings | null = null;
+    // In-memory mirror of the sent-message tracking map (issue #27), loaded once per background wake
+    // and written back only on change — keeps the hot refresh path off storage when nothing changed.
+    let cachedSentTelegramMessages: SentMessageMap | null = null;
 
     async function refreshTelegramSettingsCache(): Promise<TelegramSettings> {
       cachedTelegramSettings = await loadTelegramSettings();
       return cachedTelegramSettings;
     }
 
+    async function getSentTelegramMessages(): Promise<SentMessageMap> {
+      if (cachedSentTelegramMessages === null) {
+        cachedSentTelegramMessages = await loadSentTelegramMessages();
+      }
+      return cachedSentTelegramMessages;
+    }
+
+    /**
+     * Apply a delta to the sent-message tracking map atomically (issue #27). `mutate` receives the
+     * TTL-pruned *live* cache and returns the updated map. The read-modify-write is synchronous (no
+     * await between reading `cachedSentTelegramMessages` and writing it), so a concurrent manual send
+     * and the queued snapshot processor can't clobber each other — each builds on the other's result.
+     * Do NOT capture the map before network I/O and pass it in; always let `mutate` see the live cache.
+     */
+    async function mutateSentTelegramMessages(mutate: (map: SentMessageMap) => SentMessageMap): Promise<void> {
+      await getSentTelegramMessages(); // ensure the cache is populated
+      const pruned = pruneSentMessages(cachedSentTelegramMessages as SentMessageMap, Date.now(), TELEGRAM_SENT_MESSAGES_TTL_MS);
+      const next = mutate(pruned);
+      if (next !== cachedSentTelegramMessages) {
+        cachedSentTelegramMessages = next;
+        await saveSentTelegramMessages(next);
+      }
+    }
+
+    /** Send a study's Telegram alert. Returns whether it was delivered and, if trackable, the entry to record. */
     async function sendStudyTelegramMessage(
       rawStudy: Study,
       filter: PriorityFilter | null,
       settings: TelegramSettings,
-    ): Promise<boolean> {
+    ): Promise<{ ok: boolean; tracked: TelegramSentMessage | null }> {
       // Studies from the priority pipeline are raw API objects (not normalized).
       const study = normalizeStudy(rawStudy as unknown as Record<string, unknown>);
+      const filterName = filter?.name ?? null;
       const result = await sendTelegramMessage(
         settings.bot_token, settings.chat_id,
-        formatTelegramMessage(study, filter, settings.message_format),
+        formatTelegramMessage(study, filterName, settings.message_format),
         settings.silent_notifications,
         buildStudyReplyMarkup(study, settings.message_format),
       );
-      if (result.ok) {
-        pushDebugLog('telegram.notify.sent', { study: study.name || study.id, filter: filter?.name });
-      } else {
+      if (!result.ok) {
         pushDebugLog('telegram.notify.error', { study: study.name || study.id, filter: filter?.name, error: result.description || result.error });
+        return { ok: false, tracked: null };
       }
-      return result.ok;
+      pushDebugLog('telegram.notify.sent', { study: study.name || study.id, filter: filter?.name });
+      // Track the sent message (when we got an id back) so it can be edited to "no longer available"
+      // once the study departs the feed (issue #27). A rare id-less success still counts as delivered.
+      const tracked = study.id && typeof result.message_id === 'number'
+        ? {
+            study_id: study.id,
+            chat_id: settings.chat_id,
+            message_id: result.message_id,
+            sent_at: Date.now(),
+            study: trimStudyForTelegram(study),
+            filter_name: filterName,
+          }
+        : null;
+      return { ok: true, tracked };
+    }
+
+    /**
+     * Edit the Telegram alerts for the given tracked departed studies, marking them "no longer
+     * available" and stripping the "Open study" button (issue #27). Runs regardless of pause state —
+     * an edit keeps an existing message accurate and is not a new notification. Returns the study ids
+     * to drop from tracking (edited, gone, or permanently failed); a transient rate-limit / network
+     * failure is omitted so a later refresh retries it. Does no map mutation itself — the caller
+     * applies the drops atomically against the live cache.
+     */
+    async function editDepartedTelegramMessages(
+      departed: TelegramSentMessage[],
+      settings: TelegramSettings,
+    ): Promise<string[]> {
+      const settled = await Promise.all(
+        departed.map(async (entry): Promise<string | null> => {
+          const label = entry.study.name || entry.study_id;
+          const text = formatTelegramMessage(entry.study, entry.filter_name, settings.message_format, { unavailable: true });
+          const res = await editTelegramMessage(settings.bot_token, entry.chat_id, entry.message_id, text, emptyReplyMarkup());
+          if (res.ok) {
+            pushDebugLog('telegram.update.sent', { study: label });
+            return entry.study_id;
+          }
+          if (res.gone) {
+            pushDebugLog('telegram.update.gone', { study: label });
+            return entry.study_id;
+          }
+          pushDebugLog('telegram.update.error', { study: label, error: res.description || res.error, retriable: !!res.retriable });
+          return res.retriable ? null : entry.study_id;
+        }),
+      );
+      return settled.filter((id): id is string => id !== null);
     }
 
     function queuePrioritySnapshotEvent(rawEvent: unknown): void {
@@ -1581,6 +1668,23 @@ export default defineBackground({
       const evaluation = evaluatePrioritySnapshotEvent(priorityStateRuntime.getSnapshot(), event, filters);
       priorityStateRuntime.setSnapshot(evaluation.nextSnapshot);
       await priorityStateRuntime.persistSnapshot(evaluation.nextSnapshot, evaluation.event.observedAtMS);
+
+      // Tracked studies no longer in the feed get their Telegram alert edited to "no longer available"
+      // (issue #27) — done before the pause/baseline returns below because an edit keeps an existing
+      // message accurate and is not a new notification. Detected by scanning the tracked map against
+      // the current known-studies set (not just this event's departures), so a transient edit failure
+      // is retried on the next refresh instead of leaving a message stranded. Gated on Telegram being
+      // enabled+configured so telegram-off users (the default) do no work here.
+      const tgEnabled = !!cachedTelegramSettings && isTelegramConfigured(cachedTelegramSettings);
+      if (tgEnabled) {
+        const snapshot = pruneSentMessages(await getSentTelegramMessages(), Date.now(), TELEGRAM_SENT_MESSAGES_TTL_MS);
+        const knownIDs = evaluation.nextSnapshot.knownStudyIDs;
+        const departed = selectDepartedTracked(snapshot, Object.keys(snapshot).filter((id) => !knownIDs.has(id)));
+        // Edit the departed messages (network I/O), then apply the resulting drops + TTL prune to the
+        // live cache atomically — so a manual send landing during the edits isn't clobbered.
+        const toDrop = departed.length ? await editDepartedTelegramMessages(departed, cachedTelegramSettings!) : [];
+        await mutateSentTelegramMessages((m) => removeSentMessages(m, toDrop));
+      }
 
       // Global pause (issue #21): keep the known-studies snapshot current (above)
       // so resuming doesn't flood alerts for studies seen while paused, but run no
@@ -1685,16 +1789,25 @@ export default defineBackground({
         const results = await Promise.all(
           tgStudies.map((study) =>
             sendStudyTelegramMessage(study, studyFilterMap.get(study.id) ?? null, telegramSettings)
-              .catch((err: unknown) => { pushDebugLog('telegram.notify.error', { error: toUserErrorMessage(err) }); return false as const; }),
+              .catch((err: unknown) => { pushDebugLog('telegram.notify.error', { error: toUserErrorMessage(err) }); return { ok: false, tracked: null }; }),
           ),
         );
-        const sentCount = results.filter(Boolean).length;
+        // Count every delivered send (matches prior behavior); record only the trackable ones.
+        const sentCount = results.filter((r) => r.ok).length;
+        const trackable = results.map((r) => r.tracked).filter((t): t is TelegramSentMessage => t !== null);
         if (sentCount) {
-          await updateState((prev) => ({
-            priority_telegram_notify_count: (Number(prev.priority_telegram_notify_count) || 0) + sentCount,
-            telegram_notify_last_at: nowIso(),
-            telegram_notify_last_trigger: evaluation.event.trigger,
-          }));
+          // Record the sent messages so they can be edited when their studies depart (issue #27).
+          // Tracking write and the state write touch different storage keys — run them together.
+          await Promise.all([
+            trackable.length
+              ? mutateSentTelegramMessages((m) => addSentMessages(m, trackable, TELEGRAM_SENT_MESSAGES_MAX))
+              : Promise.resolve(),
+            updateState((prev) => ({
+              priority_telegram_notify_count: (Number(prev.priority_telegram_notify_count) || 0) + sentCount,
+              telegram_notify_last_at: nowIso(),
+              telegram_notify_last_trigger: evaluation.event.trigger,
+            })),
+          ]);
         }
       })();
 
@@ -2944,7 +3057,11 @@ export default defineBackground({
             sendResponse({ ok: false, error: 'Missing study payload' });
             return;
           }
-          const ok = await sendStudyTelegramMessage(study, null, settings);
+          const { ok, tracked } = await sendStudyTelegramMessage(study, null, settings);
+          // Track manual sends too, so they also get the "no longer available" edit on departure (issue #27).
+          if (tracked) {
+            await mutateSentTelegramMessages((m) => addSentMessages(m, [tracked], TELEGRAM_SENT_MESSAGES_MAX));
+          }
           sendResponse({ ok });
         });
       }

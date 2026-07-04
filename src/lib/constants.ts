@@ -145,6 +145,14 @@ export const TELEGRAM_API_BASE_URL = 'https://api.telegram.org/bot';
 export const TELEGRAM_SETTINGS_PERSIST_DEBOUNCE_MS = 400;
 export const TELEGRAM_VERIFY_DEBOUNCE_MS = 800;
 
+// Sent-notification tracking (issue #27): map of study_id → sent message, kept so a message can be
+// edited to "no longer available" once its study departs the feed.
+export const TELEGRAM_SENT_MESSAGES_KEY = 'telegramSentMessages';
+/** Cap on tracked sent messages; oldest are evicted past this. */
+export const TELEGRAM_SENT_MESSAGES_MAX = 200;
+/** Tracked messages older than this are pruned (a stale study whose departure we missed). */
+export const TELEGRAM_SENT_MESSAGES_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 export const DEFAULT_TELEGRAM_SETTINGS = Object.freeze({
   enabled: false,
   bot_token: '',
