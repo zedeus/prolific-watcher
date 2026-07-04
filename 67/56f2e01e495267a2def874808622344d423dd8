@@ -1,0 +1,19 @@
+src/entrypoints/background/index.ts
+  s_dacc1ec092764c::t_3385f4a1e6e65f 476-478,481,483,489,498,500
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6756f2e01e495267a2def874808622344d423dd8",
+  "prompts": {},
+  "sessions": {
+    "s_dacc1ec092764c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a763003e-9ba7-4ee5-ad7b-30237aee761e",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
