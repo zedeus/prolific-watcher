@@ -1,0 +1,70 @@
+tests-wdio/wdio.visual.conf.js
+  s_ffcd599f470644::t_12ba0827958a2b 41
+src/entrypoints/popup/main.ts
+  s_ffcd599f470644::t_3d8a28fc924f49 9
+  s_ffcd599f470644::t_a752748cd911b2 5-8,10-12,14-16
+src/lib/export-data.ts
+  s_ffcd599f470644::t_5c90b4677344a9 91-126,131
+  s_ffcd599f470644::t_c794d827f60bbe 64
+  s_ffcd599f470644::t_ef8f5e1d192c60 146,149
+  s_ffcd599f470644::t_ff64b14279c8ac 3
+  s_ffcd599f470644::t_aa61584e423321 1-2,4-63,65-90,127-130,132-145,147-148,150-349
+src/lib/__tests__/export-data.test.ts
+  s_ffcd599f470644::t_3e29b158b623a5 240-287
+  s_ffcd599f470644::t_3a16fc7a7f80fb 200-207,209-239,288-298
+  s_ffcd599f470644::t_87aab356168b69 208
+  s_ffcd599f470644::t_24c77855f50af4 402-403
+  s_ffcd599f470644::t_50de3d2b101a0d 1-199,299-401,404-408
+src/lib/__tests__/backup.test.ts
+  s_ffcd599f470644::t_825684e3708764 1-82,85-88,90-99,102-125,127-130,133-134,139-153
+  s_ffcd599f470644::t_d501910ef9d2e2 126,131-132,135-138
+  s_ffcd599f470644::t_91d7cde692e213 83-84,89,100-101
+src/lib/__dev__/fake-backup.ts
+  s_ffcd599f470644::t_9aba37abfea58a 21
+  s_ffcd599f470644::t_d4705d84ea2b33 6
+  s_ffcd599f470644::t_2c3a569ba0b6ca 1-5,7-20,22-50
+src/lib/backup.ts
+  s_ffcd599f470644::t_ffafa978c786fb 84
+  s_ffcd599f470644::t_98e540b8e54aaa 1-66,78-83,85-91,95-97,99-120
+  s_ffcd599f470644::t_01c2cf91b7bf64 67-77,92-94,98
+src/entrypoints/app/main.ts
+  s_ffcd599f470644::t_790b45e36f6e05 5-6,8-12,14-15
+  s_ffcd599f470644::t_a5622a24d819bf 7
+src/eslint.config.js
+  s_ffcd599f470644::t_111987ef3a0192 23-24
+tests-wdio/specs/15-export-backup.js
+  s_ffcd599f470644::t_6a7e267a3429a0 12-13,15
+  s_ffcd599f470644::t_3b7dc244af0e83 110-120
+  s_ffcd599f470644::t_96e0edda7482d3 183-185,188,193
+  s_ffcd599f470644::t_dd2901b02f890d 174-179,186-187,190,194-197
+  s_ffcd599f470644::t_3b2a7c0a65618a 1-11,14,16-28,37-39,41,47-48,51-61,63-106,108-109,121-137,139,146-148,150-164,167,169,173,180-182,189,191-192,198,201-207
+  s_ffcd599f470644::t_28e8c2b0f6cd17 29-36,40,42-46,49-50,62,107,138,140-145,149,165-166,168,170-172,199-200
+src/lib/__dev__/dev-helpers.ts
+  s_ffcd599f470644::t_40c61a51da2c80 19
+  s_ffcd599f470644::t_ac01cfff81d1a0 3,18,20-21,38-41
+  s_ffcd599f470644::t_ee63efe6715b1d 4
+src/entrypoints/app/views/EarningsView.svelte
+  s_ffcd599f470644::t_8b0ec8c318f004 1037,1039,1043,1045-1058
+  s_ffcd599f470644::t_34cf3193633008 899
+  s_ffcd599f470644::t_1845da89d612ad 2047-2234
+  s_ffcd599f470644::t_e59d61f394c755 45-65
+  s_ffcd599f470644::t_cb3cd3b0fc5594 42
+  s_ffcd599f470644::t_64c8595dc126dc 954
+  s_ffcd599f470644::t_7d4bf067892507 867-898,900-953,955-1036,1038,1040-1042,1044,1059
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9b9ff60e13ec4be3aa77263840740da290ca2b7f",
+  "prompts": {},
+  "sessions": {
+    "s_ffcd599f470644": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4c6b0f6-b3ad-4ce9-b5e3-526c34740c35",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
