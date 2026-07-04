@@ -1,5 +1,7 @@
 import { seedFakeSubmissions, clearFakeSubmissions } from './fake-submissions';
 import { seedFakeStudies, seedSparseStudies, clearFakeStudies, wipeStudyData, seedSyncState, seedMutes, clearMutes } from './fake-studies';
+import { devExportBackup, devRestoreBackup, devSeedResearchers, devCountTables } from './fake-backup';
+import type { RestoreSummary } from '../backup';
 
 declare global {
   interface Window {
@@ -13,6 +15,10 @@ declare global {
       seedSyncState: (patch?: Record<string, unknown>) => Promise<void>;
       seedMutes: () => Promise<number>;
       clearMutes: () => Promise<void>;
+      exportBackup: () => Promise<string>;
+      restoreBackup: (json: string) => Promise<RestoreSummary>;
+      seedResearchers: (count?: number) => Promise<number>;
+      countTables: () => Promise<Record<string, number>>;
     };
   }
 }
@@ -29,5 +35,9 @@ export function attachDevHelpers(): void {
     seedSyncState,
     seedMutes,
     clearMutes,
+    exportBackup: devExportBackup,
+    restoreBackup: devRestoreBackup,
+    seedResearchers: devSeedResearchers,
+    countTables: devCountTables,
   };
 }

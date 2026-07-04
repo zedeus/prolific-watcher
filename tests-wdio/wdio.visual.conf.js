@@ -38,6 +38,7 @@ export const config = {
     path.resolve('./specs/12-resilience-status.js'),
     path.resolve('./specs/13-mutes-assertions.js'),
     path.resolve('./specs/14-pause-assertions.js'),
+    path.resolve('./specs/15-export-backup.js'),
   ],
 
   capabilities: [{

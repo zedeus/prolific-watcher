@@ -39,9 +39,30 @@
     type RateStats,
     type GroupAgg,
   } from '../../../lib/earnings';
-  import { formatMoneyFromMajorUnits, formatDurationSeconds, formatSubmissionStatus, normalizeSubmissionStatus } from '../../../lib/format';
+  import { formatMoneyFromMajorUnits, formatDurationSeconds, formatSubmissionStatus, normalizeSubmissionStatus, nowIso } from '../../../lib/format';
   import { parseProlificCsv, type CsvImportResult } from '../../../lib/import-csv';
   import { importSubmissions } from '../../../lib/store';
+  import { browser } from 'wxt/browser';
+  import {
+    submissionsToCsv,
+    dailyRollupsToCsv,
+    groupAggToCsv,
+    forecastToCsv,
+    analyticsToJson,
+    backupDateStamp,
+    validateBackup,
+    summarizeBackup,
+    type AnalyticsBundle,
+    type AnalyticsDatasetKey,
+    type ForecastRow,
+    type BackupFile,
+    type BackupSummary,
+  } from '../../../lib/export-data';
+  import {
+    exportBackup as buildDbBackup,
+    restoreBackup as applyDbRestore,
+    browserStorageAdapter,
+  } from '../../../lib/backup';
   import { scaleBand } from 'd3-scale';
   import { Area, Axis, Bar, Chart, ChartClipPath, Circle, Highlight, Rule, Spline, Svg, Tooltip } from 'layerchart';
 
@@ -842,6 +863,199 @@
     } finally {
       importBusy = false;
     }
+  }
+
+  // ── Export & backup (issue #23) ────────────────────────────
+  const storageAdapter = browserStorageAdapter(browser.storage.local);
+  const appVersion = browser.runtime.getManifest().version;
+
+  let exportError = $state<string | null>(null);
+  let exportBanner = $state<string | null>(null);
+  let exportBusy = $state(false);
+  let bannerTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function flashBanner(msg: string) {
+    exportError = null;
+    exportBanner = msg;
+    if (bannerTimer) clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => { exportBanner = null; bannerTimer = null; }, 6000);
+  }
+
+  $effect(() => () => { if (bannerTimer) clearTimeout(bannerTimer); });
+
+  /** Trigger a client-side download of in-memory text (no network, no permissions). */
+  function downloadFile(filename: string, content: string, mime: string) {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  const nowStamp = () => backupDateStamp(nowIso());
+
+  function exportSubmissionsCsv() {
+    if (!submissions.length) return;
+    try {
+      // Export the raw stored records (not currency-converted) so the file
+      // round-trips cleanly back through the CSV importer.
+      const csv = submissionsToCsv(submissions);
+      downloadFile(`prolific-submissions-${nowStamp()}.csv`, csv, 'text/csv;charset=utf-8');
+      flashBanner(`Exported ${submissions.length} submission${submissions.length === 1 ? '' : 's'} to CSV.`);
+    } catch (err) {
+      exportError = err instanceof Error ? err.message : 'Export failed';
+    }
+  }
+
+  // Configurable analytics export.
+  type AnalyticsFormat = 'csv' | 'json';
+  const analyticsDatasets: { key: AnalyticsDatasetKey; label: string }[] = [
+    { key: 'daily', label: 'Daily totals' },
+    { key: 'researchers', label: 'By researcher' },
+    { key: 'studies', label: 'By study' },
+    { key: 'forecast', label: 'Forecast' },
+  ];
+  let analyticsOpen = $state(false);
+  let analyticsFormat = $state<AnalyticsFormat>('csv');
+  let analyticsSel = $state<Record<AnalyticsDatasetKey, boolean>>({
+    daily: true, researchers: true, studies: true, forecast: true,
+  });
+
+  const forecastExportRows: ForecastRow[] = $derived.by(() => {
+    if (!currency || !forecastWeekdayStats?.ready) return [];
+    const start = addLocalDays(startOfLocalDay(now), 1);
+    return forecastDaily(forecastWeekdayStats.stats, start, 14).map((p) => ({
+      date_key: p.date_key, median: p.median, p25: p.p25, p75: p.p75,
+    }));
+  });
+  const forecastAvailable = $derived(forecastExportRows.length > 0);
+
+  function isDatasetSelectable(key: AnalyticsDatasetKey): boolean {
+    return key !== 'forecast' || forecastAvailable;
+  }
+  const anyAnalyticsSelected = $derived(
+    analyticsDatasets.some((d) => analyticsSel[d.key] && isDatasetSelectable(d.key)),
+  );
+
+  function toggleAnalyticsDataset(key: AnalyticsDatasetKey, checked: boolean) {
+    analyticsSel = { ...analyticsSel, [key]: checked };
+  }
+
+  function exportAnalytics() {
+    if (!anyAnalyticsSelected) return;
+    const stamp = nowStamp();
+    const sel = analyticsSel;
+    try {
+      if (analyticsFormat === 'json') {
+        const bundle: AnalyticsBundle = { currency, generated_at: nowIso() };
+        if (sel.daily) bundle.daily = rangeRollups;
+        if (sel.researchers) bundle.researchers = fullResearcherBoard;
+        if (sel.studies) bundle.studies = fullStudyBoard;
+        if (sel.forecast && forecastAvailable) bundle.forecast = forecastExportRows;
+        downloadFile(`prolific-analytics-${stamp}.json`, analyticsToJson(bundle), 'application/json');
+      } else {
+        if (sel.daily) downloadFile(`prolific-daily-${stamp}.csv`, dailyRollupsToCsv(rangeRollups), 'text/csv;charset=utf-8');
+        if (sel.researchers) downloadFile(`prolific-researchers-${stamp}.csv`, groupAggToCsv(fullResearcherBoard, 'Researcher'), 'text/csv;charset=utf-8');
+        if (sel.studies) downloadFile(`prolific-studies-${stamp}.csv`, groupAggToCsv(fullStudyBoard, 'Study'), 'text/csv;charset=utf-8');
+        if (sel.forecast && forecastAvailable) downloadFile(`prolific-forecast-${stamp}.csv`, forecastToCsv(forecastExportRows, currency), 'text/csv;charset=utf-8');
+      }
+      analyticsOpen = false;
+      flashBanner(`Analytics exported (${range.label}).`);
+    } catch (err) {
+      exportError = err instanceof Error ? err.message : 'Export failed';
+    }
+  }
+
+  async function backupAll() {
+    exportBusy = true;
+    exportError = null;
+    try {
+      const backup = await buildDbBackup(storageAdapter, appVersion);
+      downloadFile(`prolific-pulse-backup-${backupDateStamp(backup.exported_at)}.json`, JSON.stringify(backup), 'application/json');
+      const summary = summarizeBackup(backup);
+      flashBanner(`Backed up ${summary.tableTotal} record${summary.tableTotal === 1 ? '' : 's'} and ${summary.settingsCount} setting${summary.settingsCount === 1 ? '' : 's'}.`);
+    } catch (err) {
+      exportError = err instanceof Error ? err.message : 'Backup failed';
+    } finally {
+      exportBusy = false;
+    }
+  }
+
+  // ── Restore ────────────────────────────────────────────────
+  const TABLE_LABELS: Record<string, string> = {
+    submissions: 'submissions',
+    studiesLatest: 'live studies',
+    studiesHistory: 'study-history rows',
+    studiesActiveSnapshot: 'active studies',
+    studyAvailabilityEvents: 'availability events',
+    researchers: 'researchers',
+    serviceState: 'service rows',
+    observationLog: 'observation points',
+  };
+  function tableLabel(name: string): string {
+    return TABLE_LABELS[name] ?? name;
+  }
+
+  let restoreInput: HTMLInputElement;
+  // Kept out of $state — Svelte Proxies don't survive IndexedDB's structured clone.
+  let pendingBackup: BackupFile | null = null;
+  let restorePending = $state<{ filename: string; summary: BackupSummary } | null>(null);
+  let restoreIncludeSettings = $state(true);
+  let restoreBusy = $state(false);
+  let restoreError = $state<string | null>(null);
+
+  async function handleRestoreFile(e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (restoreInput) restoreInput.value = '';
+    if (!file) return;
+    restoreError = null;
+    exportBanner = null;
+    try {
+      const res = validateBackup(await file.text());
+      if (!res.ok) { restoreError = res.error; return; }
+      pendingBackup = res.backup;
+      restorePending = { filename: file.name, summary: summarizeBackup(res.backup) };
+    } catch (err) {
+      restoreError = err instanceof Error ? err.message : 'Failed to read file';
+    }
+  }
+
+  function cancelRestore() {
+    restorePending = null;
+    pendingBackup = null;
+    restoreError = null;
+  }
+
+  async function confirmRestore() {
+    if (!pendingBackup) return;
+    restoreBusy = true;
+    restoreError = null;
+    let summary;
+    try {
+      summary = await applyDbRestore(pendingBackup, storageAdapter, { includeSettings: restoreIncludeSettings });
+    } catch (err) {
+      restoreError = err instanceof Error ? err.message : 'Restore failed';
+      restoreBusy = false;
+      return;
+    }
+    // The DB is committed at this point — report success before any best-effort
+    // follow-up so a hiccup there can't surface a misleading "Restore failed".
+    restorePending = null;
+    pendingBackup = null;
+    restoreBusy = false;
+    const settingsNote = summary.settingsRestored
+      ? ' Restored settings finish applying to alerts once the extension next restarts.'
+      : '';
+    flashBanner(`Restored ${summary.rowsRestored} record${summary.rowsRestored === 1 ? '' : 's'}.${settingsNote}`);
+    try {
+      await onReloadSubmissions();
+      // Nudge any open popup/other view to re-read the restored DB.
+      await browser.runtime.sendMessage({ action: 'dashboardUpdated' });
+    } catch { /* best-effort refresh; restore already succeeded */ }
   }
 </script>
 
@@ -1830,4 +2044,193 @@
       {/if}
     </section>
   {/if}
+
+  <!-- Backup & export (issue #23) -->
+  <section id="dataExportCard" class="rounded-lg border border-base-300 bg-base-100 p-4 space-y-4">
+    <div>
+      <h2 class="font-semibold">Backup &amp; export</h2>
+      <p class="text-sm text-base-content/60 mt-0.5">
+        Download your data or move it to another browser. Everything stays on your device — nothing is uploaded.
+      </p>
+    </div>
+
+    {#if exportBanner}
+      <div class="rounded border border-emerald-500/50 bg-emerald-500/10 p-3 text-sm flex items-center gap-2" id="exportBanner">
+        <span class="text-emerald-500 font-bold">✓</span>
+        <span class="flex-1">{exportBanner}</span>
+        <button type="button" class="btn btn-ghost btn-xs" onclick={() => (exportBanner = null)}>Dismiss</button>
+      </div>
+    {/if}
+    {#if exportError}
+      <div class="rounded border border-rose-500/50 bg-rose-500/10 p-3 text-sm flex items-start gap-2">
+        <span class="text-rose-500 font-bold">✕</span>
+        <div class="flex-1">
+          <div class="font-semibold">Something went wrong</div>
+          <div class="text-xs mt-0.5 text-base-content/70">{exportError}</div>
+        </div>
+        <button type="button" class="btn btn-ghost btn-xs" onclick={() => (exportError = null)}>Dismiss</button>
+      </div>
+    {/if}
+
+    <div class="grid gap-3 md:grid-cols-3">
+      <!-- Submissions CSV -->
+      <div class="rounded-lg border border-base-300 p-3 flex flex-col gap-2">
+        <div class="text-sm font-semibold">Submissions → CSV</div>
+        <div class="text-xs text-base-content/55 flex-1 leading-snug">
+          A spreadsheet of every submission — Prolific-compatible, plus the researcher, institution and rejection
+          details Prolific's own export leaves out. Re-imports here cleanly.
+        </div>
+        <button
+          id="exportSubmissionsBtn"
+          type="button"
+          class="btn btn-sm btn-outline gap-1.5"
+          disabled={submissions.length === 0}
+          onclick={exportSubmissionsCsv}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download CSV
+        </button>
+      </div>
+
+      <!-- Analytics (configurable) -->
+      <div class="rounded-lg border border-base-300 p-3 flex flex-col gap-2">
+        <div class="text-sm font-semibold">Analytics → CSV / JSON</div>
+        <div class="text-xs text-base-content/55 flex-1 leading-snug">
+          Daily totals, per-researcher and per-study summaries, and your forecast — pick what you need for spreadsheets or taxes.
+        </div>
+        <button
+          id="exportAnalyticsBtn"
+          type="button"
+          class="btn btn-sm btn-outline gap-1.5"
+          disabled={submissions.length === 0}
+          onclick={() => (analyticsOpen = !analyticsOpen)}
+          aria-expanded={analyticsOpen}
+        >
+          Choose &amp; export
+          <span class="inline-block transition-transform text-[9px]" class:rotate-90={analyticsOpen}>▶</span>
+        </button>
+      </div>
+
+      <!-- Full backup + restore -->
+      <div class="rounded-lg border border-base-300 p-3 flex flex-col gap-2">
+        <div class="text-sm font-semibold">Full backup → JSON</div>
+        <div class="text-xs text-base-content/55 flex-1 leading-snug">
+          A complete snapshot — studies, submissions, researchers, and settings — to move machines or recover after a reset.
+        </div>
+        <div class="flex gap-2">
+          <button
+            id="backupAllBtn"
+            type="button"
+            class="btn btn-sm btn-primary gap-1.5 flex-1"
+            disabled={exportBusy}
+            onclick={backupAll}
+          >
+            {exportBusy ? 'Backing up…' : 'Back up all'}
+          </button>
+          <button
+            id="restoreBtn"
+            type="button"
+            class="btn btn-sm btn-outline flex-1"
+            onclick={() => restoreInput?.click()}
+          >
+            Restore…
+          </button>
+        </div>
+        <input bind:this={restoreInput} type="file" accept=".json,application/json" class="hidden" onchange={handleRestoreFile} />
+      </div>
+    </div>
+
+    {#if analyticsOpen}
+      <div id="analyticsExportPanel" class="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-2.5">
+        <div class="text-xs font-semibold text-base-content/70">Include · <span class="font-normal text-base-content/55">{range.label}</span></div>
+        <div class="flex flex-wrap gap-x-4 gap-y-1.5">
+          {#each analyticsDatasets as ds (ds.key)}
+            {@const selectable = isDatasetSelectable(ds.key)}
+            <label class="flex items-center gap-1.5 text-sm cursor-pointer" class:opacity-40={!selectable}>
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm"
+                data-analytics-key={ds.key}
+                checked={analyticsSel[ds.key] && selectable}
+                disabled={!selectable}
+                onchange={(e) => toggleAnalyticsDataset(ds.key, (e.target as HTMLInputElement).checked)}
+              />
+              {ds.label}{ds.key === 'forecast' && !selectable ? ' (needs more history)' : ''}
+            </label>
+          {/each}
+        </div>
+        <div class="flex items-center gap-4 flex-wrap">
+          <span class="text-xs font-semibold text-base-content/70">Format</span>
+          <label class="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input type="radio" name="analyticsFormat" class="radio radio-sm" checked={analyticsFormat === 'csv'} onchange={() => (analyticsFormat = 'csv')} />
+            CSV
+          </label>
+          <label class="flex items-center gap-1.5 text-sm cursor-pointer">
+            <input type="radio" name="analyticsFormat" class="radio radio-sm" checked={analyticsFormat === 'json'} onchange={() => (analyticsFormat = 'json')} />
+            JSON
+          </label>
+          <button
+            id="analyticsDownloadBtn"
+            type="button"
+            class="btn btn-sm btn-primary ml-auto"
+            disabled={!anyAnalyticsSelected}
+            onclick={exportAnalytics}
+          >
+            Download
+          </button>
+        </div>
+        {#if analyticsFormat === 'csv'}
+          <div class="text-[11px] text-base-content/45">CSV downloads one file per selected dataset.</div>
+        {/if}
+      </div>
+    {/if}
+
+    {#if restorePending}
+      <div id="restoreConfirm" class="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 text-sm space-y-2.5">
+        <div class="font-semibold text-base">
+          Restore from <span class="font-mono text-[13px] text-base-content/70">{restorePending.filename}</span>?
+        </div>
+        <div class="text-xs text-base-content/75">This <strong>replaces</strong> your current local data with the backup's:</div>
+        {#if restorePending.summary.tables.length > 0}
+          <ul class="text-xs text-base-content/70 grid grid-cols-2 gap-x-4 gap-y-0.5">
+            {#each restorePending.summary.tables as t (t.name)}
+              <li>• {t.count} {tableLabel(t.name)}</li>
+            {/each}
+          </ul>
+        {/if}
+        {#if restorePending.summary.settingsCount > 0}
+          <label class="flex items-center gap-1.5 text-xs cursor-pointer">
+            <input
+              type="checkbox"
+              class="checkbox checkbox-xs"
+              checked={restoreIncludeSettings}
+              onchange={(e) => (restoreIncludeSettings = (e.target as HTMLInputElement).checked)}
+            />
+            Also restore settings &amp; preferences ({restorePending.summary.settingsCount})
+          </label>
+        {/if}
+        <div class="text-[11px] text-base-content/55 leading-snug">
+          Your current data is overwritten and can't be recovered unless you've backed it up first.
+        </div>
+        {#if restoreError}
+          <div class="text-xs text-rose-500">{restoreError}</div>
+        {/if}
+        <div class="flex gap-2 justify-end">
+          <button type="button" class="btn btn-ghost btn-sm" onclick={cancelRestore} disabled={restoreBusy}>Cancel</button>
+          <button id="confirmRestoreBtn" type="button" class="btn btn-warning btn-sm" onclick={confirmRestore} disabled={restoreBusy}>
+            {restoreBusy ? 'Restoring…' : 'Replace my data'}
+          </button>
+        </div>
+      </div>
+    {:else if restoreError}
+      <div class="rounded border border-rose-500/50 bg-rose-500/10 p-3 text-sm flex items-start gap-2">
+        <span class="text-rose-500 font-bold">✕</span>
+        <div class="flex-1">
+          <div class="font-semibold">Couldn't read that backup</div>
+          <div class="text-xs mt-0.5 text-base-content/70">{restoreError}</div>
+        </div>
+        <button type="button" class="btn btn-ghost btn-xs" onclick={() => (restoreError = null)}>Dismiss</button>
+      </div>
+    {/if}
+  </section>
 </div>
