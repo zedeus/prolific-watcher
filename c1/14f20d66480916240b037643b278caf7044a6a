@@ -1,0 +1,64 @@
+tests-wdio/wdio.visual.conf.js
+  s_87f8b84691c09c::t_0da1f07c84c4e2 40
+src/entrypoints/popup/components/StatusBar.svelte
+  s_87f8b84691c09c::t_bb20f984c712fe 2-16,24-27,29-35,41,43,46-50,52-64,66-81,83-96,99-109
+tests-wdio/specs/14-pause-assertions.js
+  s_87f8b84691c09c::t_60fec7483d6463 120-123,126
+  s_87f8b84691c09c::t_5baf950ece58b6 1-119,124-125,127-140
+src/entrypoints/popup/components/SettingsPanel.svelte
+  s_87f8b84691c09c::t_1af44e7d20a73d 89-92
+  s_87f8b84691c09c::t_77bca75a9f00a1 57-60
+  s_87f8b84691c09c::t_636659ff5db4c3 50
+  s_87f8b84691c09c::t_43d6898c8acfed 812-851
+src/entrypoints/popup/App.svelte
+  s_87f8b84691c09c::t_40deee6b5be3ce 369-379,381-382,388-389,391-417
+  s_87f8b84691c09c::t_93d5079f069025 1005-1008
+  s_87f8b84691c09c::t_505a1606741198 380,383-387,390
+  s_87f8b84691c09c::t_547d87a362b824 112
+  s_87f8b84691c09c::t_eab7250ede5dbc 496,502,504
+  s_87f8b84691c09c::t_dbdc2b568d4fc9 49,54
+  s_87f8b84691c09c::t_189fda19d759bc 922-925
+  s_87f8b84691c09c::t_a0f7705c57b61e 533
+  s_87f8b84691c09c::t_cdda9e79d51b04 582-588
+  s_87f8b84691c09c::t_c9ee58b6a30722 437,445,448
+  s_87f8b84691c09c::t_300342577feaf1 110-111,113-118
+src/lib/__tests__/pause.test.ts
+  s_87f8b84691c09c::t_0704a71637ad69 1-78
+src/lib/pause.ts
+  s_87f8b84691c09c::t_019552f0554b0e 1-70
+src/entrypoints/background/index.ts
+  s_87f8b84691c09c::t_949c738ff8163a 172-175,183,185-191
+  s_87f8b84691c09c::t_063c9bca4a63d0 1526-1533
+  s_87f8b84691c09c::t_1075116fd34762 912-917
+  s_87f8b84691c09c::t_8817faa7b55288 2961-2962
+  s_87f8b84691c09c::t_7438c157716625 84,86-91
+  s_87f8b84691c09c::t_386d6d7fd3efb6 2666-2684,2687,2692-2699
+  s_87f8b84691c09c::t_11fcfd876fdff4 2984
+  s_87f8b84691c09c::t_dd4d10127d9cc0 1273-1276
+  s_87f8b84691c09c::t_3bf0d56660edff 2933-2936,2945-2948
+  s_87f8b84691c09c::t_f380b12d5ea0ab 176-182,184,192-197
+  s_87f8b84691c09c::t_f583f181f3f039 2902-2918
+  s_87f8b84691c09c::t_e43614d59b84e9 1130-1133
+  s_87f8b84691c09c::t_2704352411d373 2239-2250
+  s_87f8b84691c09c::t_a224d7eecdca0a 1682-1685
+  s_87f8b84691c09c::t_1862f7091fe615 2685-2686,2688-2691
+  s_87f8b84691c09c::t_ad761926f816bd 2963
+src/lib/constants.ts
+  s_87f8b84691c09c::t_439760ccb283ba 96-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c114f20d66480916240b037643b278caf7044a6a",
+  "prompts": {},
+  "sessions": {
+    "s_87f8b84691c09c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "61e019f5-a1d1-4038-9d25-9246a46798bf",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
