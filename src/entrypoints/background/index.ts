@@ -1,5 +1,5 @@
 import { browser } from 'wxt/browser';
-import { nowIso, toUserErrorMessage } from '../../lib/format';
+import { nowIso, toUserErrorMessage, deriveSyncStatusMessage, isTransientStatusMessage } from '../../lib/format';
 import { normalizeStudy } from '../../lib/normalize';
 import type { PriorityFilter, Study, TelegramSettings } from '../../lib/types';
 import type { SoundType } from '../../lib/constants';
@@ -312,6 +312,7 @@ export default defineBackground({
         token_reason: reason,
         ...extra,
       });
+      void updateToolbarBadge();
     }
 
     function storageSetLocal(items: Record<string, unknown>): Promise<void> {
@@ -483,6 +484,17 @@ export default defineBackground({
           await badgeAPI.setBadgeText({ text: '' });
           return;
         }
+
+        // Check for error states first
+        const existing = await browser.storage.local.get(STATE_KEY);
+        const syncState = (existing[STATE_KEY] as Record<string, unknown>) || {};
+        const errorMsg = deriveSyncStatusMessage(syncState as Parameters<typeof deriveSyncStatusMessage>[0]);
+        if (errorMsg && !isTransientStatusMessage(errorMsg)) {
+          await badgeAPI.setBadgeText({ text: '!' });
+          await badgeAPI.setBadgeBackgroundColor({ color: '#dc2626' });
+          return;
+        }
+
         const filters = await getPriorityFilters();
         const enabled = filters.filter((f) => f.enabled);
         if (!enabled.length) {
@@ -943,6 +955,7 @@ export default defineBackground({
         studies_refresh_ok: false,
         studies_refresh_reason: `Rate limited. Resuming in ~${retrySeconds}s.`,
       });
+      void updateToolbarBadge();
       pushDebugLog('refresh.rate_limited', {
         trigger,
         retry_after_seconds: retrySeconds,
@@ -1006,6 +1019,7 @@ export default defineBackground({
       // the passive-ingest hot path) instead of issuing a second serialized storage round-trip.
       if (opts.extra) Object.assign(patch, opts.extra);
       await setState(patch);
+      void updateToolbarBadge();
       return snap;
     }
 
