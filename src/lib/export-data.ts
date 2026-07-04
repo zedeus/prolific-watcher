@@ -1,6 +1,7 @@
 import type { SubmissionRecord } from './db';
 import type { DailyRollup, GroupAgg } from './earnings';
 import { extractSubmissionReward, extractStartedAt, extractCompletedAt, mean } from './earnings';
+import { researcherRefFromPayload, extractSubmissionMeta, extractRejectionDetails } from './submission-analytics';
 
 // ──────────────────────────────────────────────────────────────
 // CSV serialisation — inverse of import-csv's parseCsv.
@@ -71,6 +72,7 @@ export function formatCsvTimestamp(iso: string | null | undefined): string {
 // ──────────────────────────────────────────────────────────────
 
 export const SUBMISSIONS_CSV_HEADER = [
+  // Prolific-format columns (round-trip through the stock importer).
   'Submission id',
   'Study',
   'Status',
@@ -79,6 +81,17 @@ export const SUBMISSIONS_CSV_HEADER = [
   'Started at',
   'Completed at',
   'Completion code',
+  // Extension-only columns Prolific's own export lacks. The importer reads these
+  // back when present, and ignores them on a stock Prolific CSV.
+  'Researcher',
+  'Researcher ID',
+  'Researcher country',
+  'Institution',
+  'Trial',
+  'Return reason',
+  'Rejection category',
+  'Rejection message',
+  'Researcher feedback',
 ] as const;
 
 const RETURNED_LIKE = new Set(['RETURNED', 'REJECTED']);
@@ -129,6 +142,9 @@ export function submissionToRow(record: SubmissionRecord): string[] {
   const payload = (record.payload ?? {}) as Record<string, unknown>;
   const reward = extractSubmissionReward(record);
   const bonus = extractBonusTotal(payload);
+  const researcher = researcherRefFromPayload(payload);
+  const meta = extractSubmissionMeta(payload);
+  const rejection = extractRejectionDetails(payload);
 
   const startedAt = extractStartedAt(record);
   // The importer stashes the completion time under returned_at for RETURNED/REJECTED,
@@ -147,6 +163,17 @@ export function submissionToRow(record: SubmissionRecord): string[] {
     startedAt ? formatCsvTimestamp(startedAt.toISOString()) : '',
     completedAt && !Number.isNaN(completedAt.getTime()) ? formatCsvTimestamp(completedAt.toISOString()) : '',
     extractCompletionCode(payload),
+    // Extension-only fields (missing from Prolific's CSV), via the same
+    // extractors the analytics use so both payload shapes are handled.
+    researcher?.name ?? '',
+    researcher?.id ?? '',
+    researcher?.country ?? meta.researcher_country ?? '',
+    meta.institution_name ?? '',
+    meta.is_trial ? 'yes' : '',
+    rejection.return_reason ?? '',
+    rejection.rejection_category ?? '',
+    rejection.rejection_message ?? '',
+    rejection.researcher_message ?? '',
   ];
 }
 

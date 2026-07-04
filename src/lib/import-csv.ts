@@ -131,6 +131,17 @@ export function parseProlificCsv(text: string): CsvImportResult {
     completedAt: header.indexOf('completed at'),
     code: header.indexOf('completion code'),
     status: header.indexOf('status'),
+    // Enriched columns Prolific Pulse adds on export (all optional — a stock
+    // Prolific CSV simply won't have them, so these stay -1 and are skipped).
+    researcher: header.indexOf('researcher'),
+    researcherId: header.indexOf('researcher id'),
+    researcherCountry: header.indexOf('researcher country'),
+    institution: header.indexOf('institution'),
+    trial: header.indexOf('trial'),
+    returnReason: header.indexOf('return reason'),
+    rejectionCategory: header.indexOf('rejection category'),
+    rejectionMessage: header.indexOf('rejection message'),
+    researcherFeedback: header.indexOf('researcher feedback'),
   };
   if (idx.study < 0 || idx.reward < 0 || idx.status < 0) {
     return {
@@ -166,10 +177,38 @@ export function parseProlificCsv(text: string): CsvImportResult {
       continue;
     }
 
+    const cell = (i: number) => (i >= 0 ? (row[i] ?? '').trim() : '');
+
+    // Reconstruct the extension-only fields (researcher/institution/trial) that
+    // Prolific's own CSV lacks, so an enriched export round-trips them back into
+    // the same payload shape the analytics read (study.researcher, is_trial_study).
+    const study: Record<string, unknown> = { name: studyName };
+    const researcherId = cell(idx.researcherId);
+    const researcherName = cell(idx.researcher);
+    const researcherCountry = cell(idx.researcherCountry);
+    const institution = cell(idx.institution);
+    if (researcherId || researcherName || researcherCountry || institution) {
+      const researcher: Record<string, unknown> = {};
+      if (researcherId) researcher.id = researcherId;
+      if (researcherName) researcher.name = researcherName;
+      if (researcherCountry) researcher.country = researcherCountry;
+      if (institution) researcher.institution = { name: institution };
+      study.researcher = researcher;
+    }
+    if (/^(yes|true|1)$/i.test(cell(idx.trial))) study.is_trial_study = true;
+
     const payload: Record<string, unknown> = {
-      study: { name: studyName },
+      study,
       _source: CSV_IMPORT_SOURCE,
     };
+    const returnReason = cell(idx.returnReason);
+    const rejectionCategory = cell(idx.rejectionCategory);
+    const rejectionMessage = cell(idx.rejectionMessage);
+    const researcherFeedback = cell(idx.researcherFeedback);
+    if (returnReason) payload.return_reason = returnReason;
+    if (rejectionCategory) payload.rejection_category = rejectionCategory;
+    if (rejectionMessage) payload.rejection_message = rejectionMessage;
+    if (researcherFeedback) payload.researcher_message = researcherFeedback;
     if (reward) payload.submission_reward = { amount: reward.amount_minor, currency: reward.currency };
     if (bonus && bonus.amount_minor > 0) {
       payload.bonus_payments = [{ amount: bonus.amount_minor, currency: bonus.currency }];

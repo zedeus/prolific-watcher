@@ -2077,7 +2077,8 @@
       <div class="rounded-lg border border-base-300 p-3 flex flex-col gap-2">
         <div class="text-sm font-semibold">Submissions → CSV</div>
         <div class="text-xs text-base-content/55 flex-1 leading-snug">
-          A spreadsheet of every submission, in the same format Prolific exports — so it re-imports here cleanly.
+          A spreadsheet of every submission — Prolific-compatible, plus the researcher, institution and rejection
+          details Prolific's own export leaves out. Re-imports here cleanly.
         </div>
         <button
           id="exportSubmissionsBtn"

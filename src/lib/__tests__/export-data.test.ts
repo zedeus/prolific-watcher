@@ -17,6 +17,7 @@ import {
   BACKUP_FORMAT,
 } from '../export-data';
 import { parseCsv, parseMoneyCell, parseCsvTimestamp, parseProlificCsv } from '../import-csv';
+import { researcherRefFromPayload, extractSubmissionMeta, extractRejectionDetails } from '../submission-analytics';
 import type { SubmissionRecord } from '../db';
 import type { DailyRollup, GroupAgg } from '../earnings';
 
@@ -283,6 +284,67 @@ describe('submissionsToCsv round-trips through parseProlificCsv', () => {
     expect(r.payload.completion_code).toBe('NATIVE99');
     expect(r.payload.bonus_payments).toEqual([{ amount: 150, currency: 'GBP' }]);
     expect(r.payload.submission_reward).toEqual({ amount: 500, currency: 'GBP' });
+  });
+
+  // ── Enriched columns (researcher/institution/trial/rejection) round-trip ──
+  it('round-trips the extension-only fields Prolific CSV lacks', () => {
+    const native: SubmissionRecord = {
+      submission_id: 'sub-enriched',
+      study_id: 'study-xyz',
+      study_name: 'Enriched Study',
+      participant_id: 'p1',
+      status: 'REJECTED',
+      phase: 'submitted',
+      observed_at: '2026-05-01T10:20:00.000Z',
+      updated_at: '2026-05-01T10:20:00.000Z',
+      payload: {
+        study: {
+          name: 'Enriched Study',
+          is_trial_study: true,
+          researcher: { id: 'r-42', name: 'Dr Ada', country: 'GB', institution: { name: 'Somewhere Uni' } },
+        },
+        study_code: 'ENR123',
+        submission_reward: { amount: 400, currency: 'GBP' },
+        started_at: '2026-05-01T10:00:00.000Z',
+        returned_at: '2026-05-01T10:20:00.000Z',
+        return_reason: 'FAILED_ATTENTION_CHECK',
+        rejection_category: 'LOW_EFFORT',
+        rejection_message: 'Answers were inconsistent.',
+        researcher_message: 'Please read more carefully next time.',
+      },
+    };
+    const reimported = parseProlificCsv(submissionsToCsv([native])).records;
+    expect(reimported).toHaveLength(1);
+    const p = reimported[0].payload;
+
+    expect(researcherRefFromPayload(p)).toEqual({ id: 'r-42', name: 'Dr Ada', country: 'GB' });
+    const meta = extractSubmissionMeta(p);
+    expect(meta.institution_name).toBe('Somewhere Uni');
+    expect(meta.is_trial).toBe(true);
+    expect(p.completion_code).toBe('ENR123'); // code preserved (dedup key)
+
+    const rej = extractRejectionDetails(p);
+    expect(rej.return_reason).toBe('FAILED_ATTENTION_CHECK');
+    expect(rej.rejection_category).toBe('LOW_EFFORT');
+    expect(rej.rejection_message).toBe('Answers were inconsistent.');
+    expect(rej.researcher_message).toBe('Please read more carefully next time.');
+  });
+
+  it('still imports a stock Prolific CSV that has none of the enriched columns', () => {
+    const csv = [
+      'Study,Reward,Started at,Completed at,Completion code,Status',
+      'Plain Study,£3.00,2026-03-25 15:40:00.000000,2026-03-25 16:00:00.000000,PLAIN1,APPROVED',
+    ].join('\n');
+    const recs = parseProlificCsv(csv).records;
+    expect(recs).toHaveLength(1);
+    expect(researcherRefFromPayload(recs[0].payload)).toBeNull();
+  });
+
+  it('appends the enriched columns to the header', () => {
+    const header = submissionsToCsv([]).split('\r\n')[0].toLowerCase();
+    for (const col of ['researcher', 'researcher id', 'institution', 'trial', 'return reason', 'researcher feedback']) {
+      expect(header).toContain(col);
+    }
   });
 
   it('serialises a large batch without error', () => {
