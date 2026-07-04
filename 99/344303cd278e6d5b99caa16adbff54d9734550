@@ -1,0 +1,30 @@
+src/entrypoints/app/views/EarningsView.svelte
+  s_ffcd599f470644::t_3d0008d26dc766 2080-2081
+src/lib/import-csv.ts
+  s_ffcd599f470644::t_92b4f5ff8ff5c4 134-144
+  s_ffcd599f470644::t_3e87577bb7ea5a 180-199,201,204-211
+src/lib/__tests__/export-data.test.ts
+  s_ffcd599f470644::t_ae3c51fb1d5517 20
+  s_ffcd599f470644::t_59159429b488c0 289-349
+src/lib/export-data.ts
+  s_ffcd599f470644::t_46bc0555139401 145-147
+  s_ffcd599f470644::t_f4373b6d00a964 166-176
+  s_ffcd599f470644::t_9194e62794bf7c 4
+  s_ffcd599f470644::t_bbf0e59df43532 75,84-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "99344303cd278e6d5b99caa16adbff54d9734550",
+  "prompts": {},
+  "sessions": {
+    "s_ffcd599f470644": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4c6b0f6-b3ad-4ce9-b5e3-526c34740c35",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
