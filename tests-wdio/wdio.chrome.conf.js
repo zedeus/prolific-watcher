@@ -35,8 +35,23 @@ function findChromedriverBinary() {
   return null;
 }
 
+// Chrome loads the extension at browser start via --load-extension, so the
+// build must finish BEFORE prepareChromeExtensionDir copies the output.
+// (sharedBefore's build runs too late — Chrome is already up by then.)
+console.log('Building extension with WXT for chrome...');
+execSync('npx wxt build -b chrome', { cwd: path.join(__dirname, '..', 'src'), stdio: 'inherit' });
+console.log('Extension built.');
+
 prepareChromeExtensionDir();
 fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
+
+// Chrome caches the service worker script between runs. If the extension code
+// changed, the old SW stays active and the new background.js never loads. Nuke
+// the SW cache so Chrome picks up the fresh build on startup.
+const swCacheDir = path.join(CHROME_PROFILE_DIR, 'Default', 'Service Worker');
+if (fs.existsSync(swCacheDir)) {
+  fs.rmSync(swCacheDir, { recursive: true });
+}
 
 const chromedriverBinary = findChromedriverBinary();
 

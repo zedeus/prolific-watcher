@@ -75,7 +75,11 @@ async function injectCookiesFromJSON(br, cookiesPath) {
   for (const origin of domains) {
     await br.url(origin);
     await br.pause(1000);
-    const matching = cookies.filter((c) => origin.includes((c.domain || '').replace(/^\./, '')));
+    const originHost = new URL(origin).hostname;
+    const matching = cookies.filter((c) => {
+      const cookieDomain = (c.domain || '').replace(/^\./, '');
+      return cookieDomain === originHost;
+    });
     for (const c of matching) {
       try {
         await br.setCookies([c]);
@@ -100,17 +104,32 @@ async function injectCookiesFromFirefox(br) {
     return 0;
   }
 
+  const origins = [
+    'https://app.prolific.com',
+    'https://auth.prolific.com',
+  ];
+
   let injected = 0;
-  for (const origin of ['https://app.prolific.com', 'https://auth.prolific.com']) {
+  for (const origin of origins) {
     await br.url(origin);
     await br.pause(1000);
-    for (const c of rows.filter((r) => origin.includes(r.host.replace(/^\./, '')))) {
+    const pageHost = new URL(await br.getUrl()).hostname;
+    // Match cookies whose domain is the page host OR a parent domain
+    // (e.g. .prolific.com cookies are valid on app.prolific.com)
+    const matching = rows.filter((r) => {
+      const cookieHost = r.host.replace(/^\./, '');
+      return cookieHost === pageHost || pageHost.endsWith('.' + cookieHost);
+    });
+    for (const c of matching) {
       try {
         const cookie = {
           name: c.name, value: c.value, domain: c.host,
           path: c.path, secure: !!c.isSecure, httpOnly: !!c.isHttpOnly,
         };
-        if (c.expiry > 0 && c.expiry < 2000000000) cookie.expiry = c.expiry;
+        const exp = Number(c.expiry);
+        if (exp > 0) {
+          cookie.expiry = exp > 2000000000 ? Math.floor(exp / 1000) : exp;
+        }
         await br.setCookies([cookie]);
         injected++;
       } catch { /* rejected */ }

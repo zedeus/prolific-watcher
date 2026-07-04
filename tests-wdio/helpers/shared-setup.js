@@ -32,6 +32,7 @@ export const SHARED_SPECS = [[
   './specs/08-popup-panels.js',
   './specs/09-screenshots.js',
   './specs/10-researcher-lists.js',
+  './specs/13-notifications.js',
 ]];
 
 export const SHARED_CONFIG = {
@@ -95,12 +96,15 @@ export function chromeUnpackedExtensionId(absPath) {
  *   Used by Chrome to inject session cookies from the Firefox profile.
  */
 export async function sharedBefore(opts = {}) {
-  // Build extension with WXT for both browsers.
+  // Build extension with WXT. Chrome builds at config-load time (before
+  // prepareChromeExtensionDir) so skip the redundant build here.
   const browserName = browser.capabilities?.browserName || 'firefox';
-  const wxtTarget = browserName === 'chrome' ? 'chrome' : 'firefox';
-  console.log(`Building extension with WXT for ${wxtTarget}...`);
-  execSync(`npx wxt build -b ${wxtTarget}`, { cwd: WXT_SRC_DIR, stdio: 'inherit' });
-  console.log('Extension built.');
+  if (browserName !== 'chrome') {
+    const wxtTarget = 'firefox';
+    console.log(`Building extension with WXT for ${wxtTarget}...`);
+    execSync(`npx wxt build -b ${wxtTarget}`, { cwd: WXT_SRC_DIR, stdio: 'inherit' });
+    console.log('Extension built.');
+  }
 
   // Browser-specific extension installation (Firefox).
   if (opts.installExtension) {

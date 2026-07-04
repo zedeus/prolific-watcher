@@ -64,6 +64,8 @@ const TEST_DEFAULTS = {
   minimumPlacesAvailable: 1,
   alertSoundType: 'pay' as SoundType,
   alertSoundVolume: 100,
+  quietHoursStart: '23:00',
+  quietHoursEnd: '07:00',
 };
 
 function createTestSettings() {
@@ -195,6 +197,59 @@ describe('normalizePriorityFilter', () => {
     expect(() => normalizePriorityFilter(null)).not.toThrow();
     expect(() => normalizePriorityFilter(undefined)).not.toThrow();
     expect(() => normalizePriorityFilter(42)).not.toThrow();
+  });
+
+  it('defaults desktop_notify to false when missing', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({ id: 'x', name: 'X', enabled: true });
+    expect(filter.desktop_notify).toBe(false);
+  });
+
+  it('preserves desktop_notify when true', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({ desktop_notify: true });
+    expect(filter.desktop_notify).toBe(true);
+  });
+
+  it('defaults quiet_hours_enabled to false when missing', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({});
+    expect(filter.quiet_hours_enabled).toBe(false);
+  });
+
+  it('preserves quiet_hours_enabled when true', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({ quiet_hours_enabled: true });
+    expect(filter.quiet_hours_enabled).toBe(true);
+  });
+
+  it('defaults quiet hours times when missing', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({});
+    expect(filter.quiet_hours_start).toBe('23:00');
+    expect(filter.quiet_hours_end).toBe('07:00');
+  });
+
+  it('preserves valid quiet hours times', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({ quiet_hours_start: '01:30', quiet_hours_end: '05:45' });
+    expect(filter.quiet_hours_start).toBe('01:30');
+    expect(filter.quiet_hours_end).toBe('05:45');
+  });
+
+  it('falls back to defaults for malformed quiet hours times', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    expect(normalizePriorityFilter({ quiet_hours_start: 'nope' }).quiet_hours_start).toBe('23:00');
+    expect(normalizePriorityFilter({ quiet_hours_end: '' }).quiet_hours_end).toBe('07:00');
+    expect(normalizePriorityFilter({ quiet_hours_start: 123 as any }).quiet_hours_start).toBe('23:00');
+    expect(normalizePriorityFilter({ quiet_hours_end: null as any }).quiet_hours_end).toBe('07:00');
+  });
+
+  it('rejects out-of-range quiet hours values', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    expect(normalizePriorityFilter({ quiet_hours_start: '25:00' }).quiet_hours_start).toBe('23:00');
+    expect(normalizePriorityFilter({ quiet_hours_end: '12:60' }).quiet_hours_end).toBe('07:00');
+    expect(normalizePriorityFilter({ quiet_hours_start: '99:99' }).quiet_hours_start).toBe('23:00');
   });
 });
 

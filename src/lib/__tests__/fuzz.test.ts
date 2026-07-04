@@ -188,6 +188,8 @@ describe('fuzz: normalizePriorityFilter', () => {
       minimumPlacesAvailable: 1,
       alertSoundType: 'pay',
       alertSoundVolume: 100,
+      quietHoursStart: '23:00',
+      quietHoursEnd: '07:00',
     },
   });
 
@@ -203,6 +205,12 @@ describe('fuzz: normalizePriorityFilter', () => {
       expect(Array.isArray(filter.match_researchers)).toBe(true);
       expect(Array.isArray(filter.ignore_researchers)).toBe(true);
       expect(typeof filter.enabled).toBe('boolean');
+      expect(typeof filter.desktop_notify).toBe('boolean');
+      expect(typeof filter.quiet_hours_enabled).toBe('boolean');
+      expect(typeof filter.quiet_hours_start).toBe('string');
+      expect(filter.quiet_hours_start).toMatch(/^\d{1,2}:\d{2}$/);
+      expect(typeof filter.quiet_hours_end).toBe('string');
+      expect(filter.quiet_hours_end).toMatch(/^\d{1,2}:\d{2}$/);
       expect(typeof filter.minimum_reward_major).toBe('number');
       expect(Number.isFinite(filter.minimum_reward_major)).toBe(true);
     }
