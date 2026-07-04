@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compareNumberDesc, deriveSyncStatusMessage } from '../format';
+import { compareNumberDesc, deriveSyncStatusMessage, isTransientStatusMessage } from '../format';
 import {
   REFRESH_RECONNECTING_MESSAGE,
   REFRESH_PERSISTENT_FAILURE_MESSAGE,
@@ -89,5 +89,27 @@ describe('deriveSyncStatusMessage (issue #25 recovery surfacing)', () => {
 
   it('trims whitespace around reasons', () => {
     expect(deriveSyncStatusMessage({ token_ok: false, token_reason: '  spaced  ' })).toBe('spaced');
+  });
+});
+
+describe('isTransientStatusMessage', () => {
+  it('classifies reconnecting as transient', () => {
+    expect(isTransientStatusMessage(REFRESH_RECONNECTING_MESSAGE)).toBe(true);
+  });
+
+  it('classifies rate limit as transient', () => {
+    expect(isTransientStatusMessage('Rate limited. Resuming in ~300s.')).toBe(true);
+  });
+
+  it('classifies persistent failure as non-transient', () => {
+    expect(isTransientStatusMessage(REFRESH_PERSISTENT_FAILURE_MESSAGE)).toBe(false);
+  });
+
+  it('classifies auth required as non-transient', () => {
+    expect(isTransientStatusMessage(AUTH_REQUIRED_MESSAGE)).toBe(false);
+  });
+
+  it('returns false for empty string', () => {
+    expect(isTransientStatusMessage('')).toBe(false);
   });
 });

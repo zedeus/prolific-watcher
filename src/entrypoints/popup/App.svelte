@@ -148,6 +148,7 @@
 
   let latestRefreshDate: Date | null = $state(null);
   let isRefreshingView = $state(false);
+  let initialLoadDone = $state(false);
   let retryRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let reactiveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let reactiveRefreshPending = false;
@@ -600,6 +601,7 @@
       errorMessage = healthMessage;
     } finally {
       isRefreshingView = false;
+      initialLoadDone = true;
       if (reactiveRefreshPending && !reactiveRefreshTimer) {
         scheduleReactiveRefresh();
       }
@@ -932,6 +934,7 @@
        This is required for WebdriverIO test compatibility. -->
   <LivePanel
     active={activeTab === 'live'}
+    loading={!initialLoadDone}
     {studies}
     {priorityFilters}
     {telegramSettings}
@@ -953,6 +956,7 @@
   />
   <FeedPanel
     active={activeTab === 'feed'}
+    loading={!initialLoadDone}
     {events}
     {researcherProfiles}
     primaryCurrency={earningsPrefs.primary_currency || 'USD'}
@@ -962,6 +966,7 @@
   />
   <SubmissionsPanel
     active={activeTab === 'submissions'}
+    loading={!initialLoadDone}
     {submissions}
     {allSubmissions}
     {earningsPrefs}

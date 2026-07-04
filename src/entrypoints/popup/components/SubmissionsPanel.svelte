@@ -39,6 +39,7 @@
 
   let {
     active,
+    loading = false,
     submissions,
     allSubmissions,
     earningsPrefs,
@@ -49,6 +50,7 @@
     researcherProfiles,
   } = $props<{
     active: boolean;
+    loading?: boolean;
     submissions: Submission[];
     allSubmissions: SubmissionRecord[];
     earningsPrefs: EarningsPrefs;
@@ -350,6 +352,19 @@
       <div class="empty-events p-8 text-base-content/50 text-sm text-center border border-dashed border-base-300 rounded-lg bg-base-100">
         {overrideMessage}
       </div>
+    {:else if loading && !submissions.length}
+      {#each [0, 1, 2] as i (i)}
+        <div class="p-3 rounded-lg mb-2 border border-base-300 bg-base-100 animate-pulse">
+          <div class="flex items-start justify-between mb-2">
+            <div class="h-4 bg-base-300 rounded w-1/2"></div>
+            <div class="h-3 bg-base-300 rounded w-20"></div>
+          </div>
+          <div class="flex gap-3">
+            <div class="h-4 bg-base-300 rounded w-14"></div>
+            <div class="h-4 bg-base-300 rounded w-16"></div>
+          </div>
+        </div>
+      {/each}
     {:else if !filteredAndSorted.length}
       <div class="empty-events p-8 text-base-content/50 text-sm text-center border border-dashed border-base-300 rounded-lg bg-base-100">
         {#if hasActiveFilters}

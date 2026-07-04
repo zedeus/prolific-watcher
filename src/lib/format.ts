@@ -335,6 +335,12 @@ export interface SyncStatusFields {
  * line arrive pre-worded in studies_refresh_reason) — then a response-capture problem. An empty
  * string means healthy. Kept pure so the state→message contract is unit-testable without a browser.
  */
+export function isTransientStatusMessage(message: string): boolean {
+  return message.includes('reconnecting') ||
+    message.includes('Rate limited') ||
+    message.includes('Resuming in');
+}
+
 export function deriveSyncStatusMessage(state: SyncStatusFields | null): string {
   if (!state) return '';
   if (state.token_ok === false) return String(state.token_reason || 'Token sync error.').trim();

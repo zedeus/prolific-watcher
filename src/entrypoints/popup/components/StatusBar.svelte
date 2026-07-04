@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PauseDuration } from '../../../lib/pause';
+  import { isTransientStatusMessage } from '../../../lib/format';
 
   let {
     offline,
@@ -29,6 +30,8 @@
 
   let pauseMenu: HTMLDetailsElement | null = $state(null);
 
+  const isWarning = $derived(isTransientStatusMessage(errorMessage));
+
   function pause(duration: PauseDuration) {
     if (pauseMenu) pauseMenu.open = false;
     onPause?.(duration);
@@ -38,9 +41,9 @@
 <div class="flex items-center gap-2 px-0.5 pb-2.5">
   <span
     id="syncDot"
-    class="inline-block w-2.5 h-2.5 rounded-full flex-none {paused ? 'bg-warning shadow-[0_0_0_2px_rgba(245,158,11,0.15)] paused' : offline ? 'bg-error shadow-[0_0_0_2px_rgba(225,29,72,0.15)] bad' : 'bg-success shadow-[0_0_0_2px_rgba(26,147,111,0.15)]'}"
+    class="inline-block w-2.5 h-2.5 rounded-full flex-none {paused ? 'bg-warning shadow-[0_0_0_2px_rgba(245,158,11,0.15)] paused' : offline && isWarning ? 'bg-warning shadow-[0_0_0_2px_rgba(245,158,11,0.15)]' : offline ? 'bg-error shadow-[0_0_0_2px_rgba(225,29,72,0.15)] bad' : 'bg-success shadow-[0_0_0_2px_rgba(26,147,111,0.15)]'}"
     title="Sync status"
-    aria-label={paused ? 'Paused' : offline ? 'Offline' : 'Connected'}
+    aria-label={paused ? 'Paused' : offline ? (isWarning ? 'Recovering' : 'Offline') : 'Connected'}
   ></span>
   <span class="whitespace-nowrap font-semibold text-[13px] text-base-content/70">
     {#if paused}
@@ -109,9 +112,14 @@
 {#if errorMessage && !paused}
   <div
     id="errorMessage"
-    class="mb-2.5 text-[13px] leading-snug py-2.5 px-3.5 rounded-lg border border-error/30 bg-error/10 text-error-content dark:text-error"
+    class="mb-2.5 flex items-center gap-2 text-[12.5px] leading-snug py-2 px-3.5 rounded-lg border {isWarning ? 'border-warning/40 bg-warning/10 text-base-content' : 'border-error/30 bg-error/10 text-error-content dark:text-error'}"
   >
-    {errorMessage}
+    {#if isWarning}
+      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="flex-none opacity-70"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+    {:else}
+      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="flex-none opacity-70"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    {/if}
+    <span>{errorMessage}</span>
   </div>
 {:else}
   <div id="errorMessage" class="hidden"></div>

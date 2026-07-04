@@ -27,6 +27,7 @@
 
   let {
     active,
+    loading = false,
     studies,
     priorityFilters,
     telegramSettings,
@@ -47,6 +48,7 @@
     onUnmuteResearcher,
   } = $props<{
     active: boolean;
+    loading?: boolean;
     studies: Study[];
     priorityFilters: PriorityFilter[];
     telegramSettings: TelegramSettings;
@@ -292,6 +294,18 @@
       <div class="empty-events p-8 text-base-content/50 text-sm text-center border border-dashed border-base-300 rounded-lg bg-base-100">
         {overrideMessage}
       </div>
+    {:else if loading && !studies.length}
+      {#each [0, 1, 2] as i (i)}
+        <div class="p-3.5 rounded-lg mb-2.5 border border-base-300 bg-base-100 animate-pulse">
+          <div class="h-4 bg-base-300 rounded w-3/4 mb-3"></div>
+          <div class="flex gap-3">
+            <div class="h-5 bg-base-300 rounded w-16"></div>
+            <div class="h-4 bg-base-300 rounded w-14"></div>
+            <div class="h-4 bg-base-300 rounded w-10"></div>
+            <div class="h-4 bg-base-300 rounded w-12"></div>
+          </div>
+        </div>
+      {/each}
     {:else if !filteredAndSortedStudies.length}
       <div class="empty-events p-8 text-base-content/50 text-sm text-center border border-dashed border-base-300 rounded-lg bg-base-100">
         {#if hasActiveFilters}

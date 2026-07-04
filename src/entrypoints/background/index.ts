@@ -92,6 +92,8 @@ import {
 import {
   evaluatePrioritySnapshotEvent,
   toFullSnapshotEvent,
+  studyMatchesPriorityFilter,
+  studyKeywordBlob,
 } from './domain';
 import type { NormalizedSnapshotEvent } from './domain';
 import {
@@ -465,9 +467,38 @@ export default defineBackground({
       } catch {
         // Popup may be closed; ignore delivery errors.
       }
+
+      void updateToolbarBadge();
     }
 
 
+
+    async function updateToolbarBadge(): Promise<void> {
+      try {
+        if (isPausedNow()) {
+          await browser.action.setBadgeText({ text: '' });
+          return;
+        }
+        const filters = await getPriorityFilters();
+        const enabled = filters.filter((f) => f.enabled);
+        if (!enabled.length) {
+          await browser.action.setBadgeText({ text: '' });
+          return;
+        }
+        const studies = await store.getCurrentAvailableStudies(200);
+        let count = 0;
+        for (const study of studies) {
+          const blob = studyKeywordBlob(study);
+          if (enabled.some((f) => studyMatchesPriorityFilter(study, f, blob))) count++;
+        }
+        await browser.action.setBadgeText({ text: count > 0 ? String(count) : '' });
+        if (count > 0) {
+          await browser.action.setBadgeBackgroundColor({ color: '#7c3aed' });
+        }
+      } catch {
+        // Badge updates are non-critical; swallow errors.
+      }
+    }
 
     function normalizeStudiesRefreshPolicy(rawMinimumDelaySeconds: unknown, rawAverageDelaySeconds: unknown, rawSpreadSeconds: unknown): Record<string, number> {
       const parseSeconds = (value: unknown, fallback: number): number => {
@@ -2715,6 +2746,7 @@ export default defineBackground({
             // the next alarm tick.
             await requestTokenSync('settings.pause.resumed');
           }
+          void updateToolbarBadge();
         });
       }
 
@@ -2737,6 +2769,7 @@ export default defineBackground({
           });
 
           sendResponse({ ok: true, filters });
+          void updateToolbarBadge();
         });
       }
 
@@ -3013,6 +3046,8 @@ export default defineBackground({
       } catch (err) {
         pushDebugLog('boot.initial_refresh.error', { error: stringifyError(err) });
       }
+
+      void updateToolbarBadge();
     }
 
     boot('startup-load', 'extension.init').catch(() => {
