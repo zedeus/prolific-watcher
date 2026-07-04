@@ -473,16 +473,20 @@ export default defineBackground({
 
 
 
+    // WXT's browser export doesn't polyfill action↔browserAction across MV2/MV3.
+    const badgeAPI = browser.action ?? browser.browserAction;
+
     async function updateToolbarBadge(): Promise<void> {
       try {
+        if (!badgeAPI) return;
         if (isPausedNow()) {
-          await browser.action.setBadgeText({ text: '' });
+          await badgeAPI.setBadgeText({ text: '' });
           return;
         }
         const filters = await getPriorityFilters();
         const enabled = filters.filter((f) => f.enabled);
         if (!enabled.length) {
-          await browser.action.setBadgeText({ text: '' });
+          await badgeAPI.setBadgeText({ text: '' });
           return;
         }
         const studies = await store.getCurrentAvailableStudies(200);
@@ -491,9 +495,9 @@ export default defineBackground({
           const blob = studyKeywordBlob(study);
           if (enabled.some((f) => studyMatchesPriorityFilter(study, f, blob))) count++;
         }
-        await browser.action.setBadgeText({ text: count > 0 ? String(count) : '' });
+        await badgeAPI.setBadgeText({ text: count > 0 ? String(count) : '' });
         if (count > 0) {
-          await browser.action.setBadgeBackgroundColor({ color: '#7c3aed' });
+          await badgeAPI.setBadgeBackgroundColor({ color: '#7c3aed' });
         }
       } catch {
         // Badge updates are non-critical; swallow errors.
