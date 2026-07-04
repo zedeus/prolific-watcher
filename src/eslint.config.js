@@ -20,6 +20,8 @@ export default ts.config(
         clearInterval: 'readonly',
         fetch: 'readonly',
         atob: 'readonly',
+        Blob: 'readonly',
+        URL: 'readonly',
         AudioContext: 'readonly',
         AudioBuffer: 'readonly',
         AudioBufferSourceNode: 'readonly',
