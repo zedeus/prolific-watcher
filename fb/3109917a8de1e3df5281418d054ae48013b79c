@@ -1,0 +1,23 @@
+tests-wdio/specs/visual-settings.js
+  s_cbd2eaa2b63121::t_38f628268e72a3 46-48
+src/entrypoints/popup/components/SettingsPanel.svelte
+  s_cbd2eaa2b63121::t_ac0af594e7d08d 939-940
+  s_cbd2eaa2b63121::t_198458e0149f9b 1240,1242-1244,1247,1249-1252,1254-1259,1263-1266
+  s_cbd2eaa2b63121::t_1b86aecb7353ad 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fb3109917a8de1e3df5281418d054ae48013b79c",
+  "prompts": {},
+  "sessions": {
+    "s_cbd2eaa2b63121": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "81163204-5d74-4e0a-b28d-a9be0446eec0",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
