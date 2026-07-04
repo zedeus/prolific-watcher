@@ -269,7 +269,9 @@
     return raw
       .filter((f: unknown) => f && typeof f === 'object')
       .map((raw: Record<string, unknown>) => {
-        const filter = { ...raw } as unknown as PriorityFilter;
+        // Merge stored values over defaults so new fields are always present
+        const defaults = createDefaultPriorityFilter();
+        const filter = { ...defaults, ...raw } as unknown as PriorityFilter;
         const bag = filter as unknown as Record<string, unknown>;
         if (filter.alert_sound_enabled === false) {
           filter.alert_sound_type = SOUND_TYPE_NONE;

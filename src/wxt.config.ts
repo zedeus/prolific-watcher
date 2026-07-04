@@ -22,6 +22,7 @@ export default defineConfig({
       'alarms',
       'storage',
       'webRequest',
+      'notifications',
       ...(browser === 'firefox'
         ? ['webRequestBlocking', 'webRequestFilterResponse']
         : ['offscreen']),

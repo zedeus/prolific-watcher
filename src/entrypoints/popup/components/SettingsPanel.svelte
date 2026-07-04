@@ -434,7 +434,9 @@
     const researcherCount = (f.match_researchers?.length || 0) + (f.ignore_researchers?.length || 0);
     if (researcherCount > 0) badges.push({ label: `${researcherCount} r` });
     if (f.auto_open_in_new_tab) badges.push({ label: 'auto-open' });
+    if (f.desktop_notify) badges.push({ label: 'desktop' });
     if (f.telegram_notify && tg.enabled) badges.push({ label: 'telegram' });
+    if (f.quiet_hours_enabled) badges.push({ label: `quiet ${f.quiet_hours_start}–${f.quiet_hours_end}` });
     if (f.alert_sound_type !== SOUND_TYPE_NONE && f.alert_sound_enabled) {
       const soundLabel = soundLabelByType.get(f.alert_sound_type) ?? f.alert_sound_type;
       badges.push({ label: soundLabel });
@@ -994,6 +996,45 @@
                   />
                   {#if !tg.enabled || !tgConfigured}
                     <span class="text-[10px] text-base-content/30">Configure Telegram below</span>
+                  {/if}
+                </div>
+                <label for="priorityDesktopNotifyToggle-{idx}" class="text-[12.5px] text-base-content/50 font-medium">Desktop notify</label>
+                <div>
+                  <input
+                    id="priorityDesktopNotifyToggle-{idx}"
+                    type="checkbox"
+                    class="toggle toggle-primary toggle-xs"
+                    aria-label="Send desktop notification"
+                    bind:checked={filter.desktop_notify}
+                    onchange={() => handleFilterInput(filter)}
+                  />
+                </div>
+                <label for="priorityQuietHoursToggle-{idx}" class="text-[12.5px] text-base-content/50 font-medium">Quiet hours</label>
+                <div class="flex items-center gap-2">
+                  <input
+                    id="priorityQuietHoursToggle-{idx}"
+                    type="checkbox"
+                    class="toggle toggle-primary toggle-xs"
+                    aria-label="Enable quiet hours"
+                    bind:checked={filter.quiet_hours_enabled}
+                    onchange={() => handleFilterInput(filter)}
+                  />
+                  {#if filter.quiet_hours_enabled}
+                    <input
+                      type="time"
+                      class="input input-xs w-[5.5rem] tabular-nums"
+                      aria-label="Quiet hours start"
+                      bind:value={filter.quiet_hours_start}
+                      onchange={() => handleFilterInput(filter)}
+                    />
+                    <span class="text-[11px] text-base-content/40">–</span>
+                    <input
+                      type="time"
+                      class="input input-xs w-[5.5rem] tabular-nums"
+                      aria-label="Quiet hours end"
+                      bind:value={filter.quiet_hours_end}
+                      onchange={() => handleFilterInput(filter)}
+                    />
                   {/if}
                 </div>
                 <label for="priorityAlertSoundTypeSelect-{idx}" class="text-[12.5px] text-base-content/50 font-medium">Alert sound</label>

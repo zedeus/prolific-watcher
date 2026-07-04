@@ -29,6 +29,7 @@ export interface CreatePriorityActionsOptions {
 export interface PriorityActions {
   handleAlertAction: (filter: PriorityFilter, candidateStudies: Study[], trigger: string) => Promise<void>;
   handleAutoOpenAction: (filter: PriorityFilter, candidateStudies: Study[], trigger: string) => Promise<void>;
+  handleDesktopNotifyAction: (filter: PriorityFilter, candidateStudies: Study[], trigger: string) => Promise<void>;
 }
 
 export function createPriorityActions(options: CreatePriorityActionsOptions): PriorityActions {
@@ -278,8 +279,36 @@ export function createPriorityActions(options: CreatePriorityActionsOptions): Pr
     });
   }
 
+  async function handleDesktopNotifyAction(filter: PriorityFilter, candidateStudies: Study[], trigger: string): Promise<void> {
+    if (!candidateStudies.length) return;
+    if (!filter.desktop_notify) {
+      pushDebugLog('priority.desktop_notify.disabled', { trigger, candidate_count: candidateStudies.length });
+      return;
+    }
+
+    const studyNames = candidateStudies.map((s) => s.name || s.id).slice(0, 5);
+    const title = candidateStudies.length === 1
+      ? 'New study available'
+      : `${candidateStudies.length} new studies available`;
+    const message = studyNames.join('\n');
+
+    try {
+      await browser.notifications.create(`pp-priority-${filter.id}-${Date.now()}`, {
+        type: 'basic',
+        iconUrl: (browser.runtime as any).getURL('icons/icon-96.png'),
+        title,
+        message,
+      });
+      await bumpCounter('priority_desktop_notify_count', 1);
+      pushDebugLog('priority.desktop_notify.sent', { trigger, study_count: candidateStudies.length, filter: filter.name });
+    } catch (error) {
+      pushDebugLog('priority.desktop_notify.error', { trigger, error: String(error && (error as Error).message ? (error as Error).message : error) });
+    }
+  }
+
   return Object.freeze({
     handleAlertAction,
     handleAutoOpenAction,
+    handleDesktopNotifyAction,
   });
 }

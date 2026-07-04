@@ -75,6 +75,9 @@ export const DEFAULT_PRIORITY_ALERT_SOUND_VOLUME = 100;
 export const MIN_PRIORITY_ALERT_SOUND_VOLUME = 0;
 export const MAX_PRIORITY_ALERT_SOUND_VOLUME = 100;
 
+export const DEFAULT_QUIET_HOURS_START = '23:00';
+export const DEFAULT_QUIET_HOURS_END = '07:00';
+
 export const PRIORITY_ALERT_SOUND_TYPE_TO_BASE64_PATH = Object.freeze({
   pay: '/sounds/pay.base64',
   metal_gear: '/sounds/metal_gear.base64',

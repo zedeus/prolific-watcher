@@ -36,6 +36,8 @@ export interface PriorityState {
   markAutoOpenSeen: (studies: Study[], seenAtMS?: number) => void;
   selectTelegramCandidates: (studies: Study[], nowMS?: number) => Study[];
   markTelegramSeen: (studies: Study[], seenAtMS?: number) => void;
+  selectDesktopNotifyCandidates: (studies: Study[], nowMS?: number) => Study[];
+  markDesktopNotifySeen: (studies: Study[], seenAtMS?: number) => void;
   markAttempted: (studyID: string) => void;
   clearSeenForAttemptedStudies: (removedStudyIDs: string[]) => void;
   resetActionSeen: () => void;
@@ -59,6 +61,7 @@ export function createPriorityState(options: CreatePriorityStateOptions): Priori
   let alertSeenStudyIDs = new Map<string, number>();
   let autoOpenSeenStudyIDs = new Map<string, number>();
   let telegramSeenStudyIDs = new Map<string, number>();
+  let desktopNotifySeenStudyIDs = new Map<string, number>();
   let attemptedStudyIDs = new Map<string, number>(); // studyID -> attemptedAtMS
 
   function normalizeSnapshotFromStorage(rawSnapshot: StorageSnapshot | null | undefined): SnapshotState {
@@ -215,6 +218,7 @@ export function createPriorityState(options: CreatePriorityStateOptions): Priori
         // (likely full). Clear from seen maps so it re-alerts when it reappears.
         alertSeenStudyIDs.delete(studyID);
         autoOpenSeenStudyIDs.delete(studyID);
+        desktopNotifySeenStudyIDs.delete(studyID);
         attemptedStudyIDs.delete(studyID);
       }
     }
@@ -234,12 +238,15 @@ export function createPriorityState(options: CreatePriorityStateOptions): Priori
     markAutoOpenSeen: (studies: Study[], seenAtMS?: number): void => markActionStudiesSeen(studies, autoOpenSeenStudyIDs, seenAtMS),
     selectTelegramCandidates: (studies: Study[], nowMS?: number): Study[] => selectActionStudies(studies, telegramSeenStudyIDs, nowMS, limits.telegramSeenTTLMS),
     markTelegramSeen: (studies: Study[], seenAtMS?: number): void => markActionStudiesSeen(studies, telegramSeenStudyIDs, seenAtMS, limits.telegramSeenTTLMS),
+    selectDesktopNotifyCandidates: (studies: Study[], nowMS?: number): Study[] => selectActionStudies(studies, desktopNotifySeenStudyIDs, nowMS),
+    markDesktopNotifySeen: (studies: Study[], seenAtMS?: number): void => markActionStudiesSeen(studies, desktopNotifySeenStudyIDs, seenAtMS),
     markAttempted,
     clearSeenForAttemptedStudies,
     resetActionSeen: (): void => {
       alertSeenStudyIDs = new Map();
       autoOpenSeenStudyIDs = new Map();
       telegramSeenStudyIDs = new Map();
+      desktopNotifySeenStudyIDs = new Map();
       attemptedStudyIDs = new Map();
     },
     getQueuePromise: (): Promise<void> => snapshotQueue,

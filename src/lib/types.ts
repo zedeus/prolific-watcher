@@ -90,6 +90,10 @@ export interface PriorityFilter {
   alert_sound_type: string;
   alert_sound_volume: number;
   telegram_notify: boolean;
+  desktop_notify: boolean;
+  quiet_hours_enabled: boolean;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
   minimum_reward_major: number;
   minimum_hourly_reward_major: number;
   maximum_estimated_minutes: number;
@@ -204,6 +208,7 @@ export interface SyncState {
   priority_alert_sound_count: number;
   priority_study_auto_open_count: number;
   priority_telegram_notify_count: number;
+  priority_desktop_notify_count: number;
   tab_auto_open_count: number;
 
   // Priority alerts

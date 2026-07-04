@@ -41,6 +41,8 @@ export interface PrioritySettingsDefaults {
   minimumPlacesAvailable: number;
   alertSoundType: SoundType;
   alertSoundVolume: number;
+  quietHoursStart: string;
+  quietHoursEnd: string;
 }
 
 export interface CreatePrioritySettingsOptions {
@@ -120,6 +122,12 @@ export function createPrioritySettings(options: CreatePrioritySettingsOptions): 
     const normalizedAlertSoundType = canonicalPriorityAlertSoundType(r.alert_sound_type);
     const alertSoundVolume = clampInt(r.alert_sound_volume, limits.minAlertSoundVolume, limits.maxAlertSoundVolume, defaults.alertSoundVolume);
 
+    const validTimeRe = /^(?:[01]?\d|2[0-3]):[0-5]\d$/;
+    const quietHoursStart = typeof r.quiet_hours_start === 'string' && validTimeRe.test(r.quiet_hours_start)
+      ? r.quiet_hours_start : defaults.quietHoursStart;
+    const quietHoursEnd = typeof r.quiet_hours_end === 'string' && validTimeRe.test(r.quiet_hours_end)
+      ? r.quiet_hours_end : defaults.quietHoursEnd;
+
     return {
       id,
       name,
@@ -129,6 +137,10 @@ export function createPrioritySettings(options: CreatePrioritySettingsOptions): 
       alert_sound_type: normalizedAlertSoundType,
       alert_sound_volume: alertSoundVolume,
       telegram_notify: r.telegram_notify !== false,
+      desktop_notify: r.desktop_notify === true,
+      quiet_hours_enabled: r.quiet_hours_enabled === true,
+      quiet_hours_start: quietHoursStart,
+      quiet_hours_end: quietHoursEnd,
       minimum_reward_major: Math.round(minimumRewardMajor * 100) / 100,
       minimum_hourly_reward_major: Math.round(minimumHourlyRewardMajor * 100) / 100,
       maximum_estimated_minutes: maximumEstimatedMinutes,

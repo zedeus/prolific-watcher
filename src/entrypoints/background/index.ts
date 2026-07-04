@@ -72,6 +72,8 @@ import {
   REFRESH_RECONNECTING_MESSAGE,
   REFRESH_PERSISTENT_FAILURE_MESSAGE,
   AUTH_REQUIRED_MESSAGE,
+  DEFAULT_QUIET_HOURS_START,
+  DEFAULT_QUIET_HOURS_END,
 } from '../../lib/constants';
 import {
   evaluatePrioritySnapshotEvent,
@@ -91,6 +93,7 @@ import {
 import { createPriorityState } from './state';
 import { createPriorityActions } from './actions';
 import { createPrioritySettings } from './settings';
+import { isInQuietHours } from '../../lib/priority-filter';
 import {
   loadTelegramSettings,
   saveTelegramSettings,
@@ -172,6 +175,8 @@ export default defineBackground({
         minimumPlacesAvailable: DEFAULT_PRIORITY_FILTER_MIN_PLACES,
         alertSoundType: DEFAULT_PRIORITY_ALERT_SOUND_TYPE as SoundType,
         alertSoundVolume: DEFAULT_PRIORITY_ALERT_SOUND_VOLUME,
+        quietHoursStart: DEFAULT_QUIET_HOURS_START,
+        quietHoursEnd: DEFAULT_QUIET_HOURS_END,
       },
     });
 
@@ -1377,6 +1382,13 @@ export default defineBackground({
       await priorityActionsRuntime.handleAutoOpenAction(filter, candidateStudies, trigger);
     }
 
+    async function handlePriorityDesktopNotifyAction(filter: PriorityFilter, matchingStudies: Study[], trigger: string): Promise<void> {
+      const candidateStudies = priorityStateRuntime.selectDesktopNotifyCandidates(matchingStudies);
+      if (!candidateStudies.length) return;
+      priorityStateRuntime.markDesktopNotifySeen(candidateStudies);
+      await priorityActionsRuntime.handleDesktopNotifyAction(filter, candidateStudies, trigger);
+    }
+
     let cachedTelegramSettings: TelegramSettings | null = null;
 
     async function refreshTelegramSettingsCache(): Promise<TelegramSettings> {
@@ -1453,9 +1465,14 @@ export default defineBackground({
           anyFilterNotify = true;
           tgNotifyStudies.push(...matched);
         }
+        if (isInQuietHours(filter)) {
+          pushDebugLog('priority.quiet_hours', { trigger: evaluation.event.trigger, filter: filter.name, candidate_count: matched.length });
+          continue;
+        }
         priorityActionPromises.push(
           handlePriorityAlertAction(filter, matched, evaluation.event.trigger),
           handlePriorityAutoOpenAction(filter, matched, evaluation.event.trigger),
+          handlePriorityDesktopNotifyAction(filter, matched, evaluation.event.trigger),
         );
       }
       if (!evaluation.enabledFilters.length) {
