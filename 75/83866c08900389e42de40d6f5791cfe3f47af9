@@ -1,0 +1,41 @@
+src/entrypoints/background/domain.ts
+  s_cbd2eaa2b63121::t_25519e6c7b89ef 2,83-95,97,101-103,110,113-114,117-126,146-149,165-166
+src/entrypoints/background/index.ts
+  s_cbd2eaa2b63121::t_492ebbfd3f582c 41,49-50,54,170-171,176,182,1472-1475
+src/entrypoints/background/settings.ts
+  s_cbd2eaa2b63121::t_389e5ff15a37d1 10-11,33-34,39,46,110-139,157,184-185,191-193
+src/entrypoints/popup/App.svelte
+  s_cbd2eaa2b63121::t_139df027e7bf12 836
+src/entrypoints/popup/components/SettingsPanel.svelte
+  s_cbd2eaa2b63121::t_9e8043e3318aac 4,7,39-43,53,77,173,185-190,193-196,200-206,371,401-413,418-420,431-452,463,483,499-500,504-506,939-940,976-986,1052-1115,1122-1135,1235-1268
+src/lib/__tests__/domain.test.ts
+  s_cbd2eaa2b63121::t_d33183a9842593 5,61,63,68-70,291-589
+src/lib/__tests__/fuzz.test.ts
+  s_cbd2eaa2b63121::t_74945e380ac21f 181,184,190
+src/lib/__tests__/settings.test.ts
+  s_cbd2eaa2b63121::t_173388884610f1 54-55,60,67,258-414
+src/lib/constants.ts
+  s_cbd2eaa2b63121::t_14ffe6834aa23a 52,60-61,66-70
+src/lib/priority-filter.ts
+  s_cbd2eaa2b63121::t_dc71c8aabc6507 10,31,33,38-40
+src/lib/types.ts
+  s_cbd2eaa2b63121::t_aad44517d4fd16 101-102,107-109
+tests-wdio/specs/visual-settings.js
+  s_cbd2eaa2b63121::t_31403aa7769945 35,43-48,51,56,62-66,84-132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7583866c08900389e42de40d6f5791cfe3f47af9",
+  "prompts": {},
+  "sessions": {
+    "s_cbd2eaa2b63121": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "81163204-5d74-4e0a-b28d-a9be0446eec0",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
