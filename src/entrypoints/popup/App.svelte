@@ -906,10 +906,12 @@
   });
 </script>
 
-<!-- While the researcher card is open, grow the popup to a consistent height (toward the browser's
-     ~600px popup cap) so the modal has the same room regardless of which tab is behind it — otherwise
-     its max-height tracks each tab's differing content height and scrolls by different amounts. -->
-<main class="w-[620px] p-3 bg-base-200 text-base-content" style:min-height={researcherProfile ? '600px' : undefined}>
+<!-- The researcher card overlays this wrapper (absolute inset-0), so it's sized by the wrapper's
+     definite height (the current popup height) rather than the popup's ambiguous 100vh. A fixed/100vh
+     overlay feeds back into the browser's content-based popup sizing and grows the popup on open; this
+     overlays in place and scrolls the card internally instead. -->
+<div class="relative w-[620px]">
+<main class="w-[620px] p-3 bg-base-200 text-base-content">
   <StatusBar
     offline={!!errorMessage}
     {errorMessage}
@@ -1035,6 +1037,8 @@
     <div id="panelSettings" class="panel" class:active={activeTab === 'settings'}></div>
   {/if}
 
+</main>
+
   <ResearcherProfileCard
     profile={researcherProfile}
     latestStudy={profileLatestStudy}
@@ -1043,4 +1047,4 @@
     onPrioritize={() => addResearcherFromProfile('match')}
     onBlacklist={() => addResearcherFromProfile('ignore')}
   />
-</main>
+</div>

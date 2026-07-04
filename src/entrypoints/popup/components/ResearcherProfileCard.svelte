@@ -115,10 +115,10 @@
 {#if profile}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div
-    class="researcher-profile-card fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-2"
+    class="researcher-profile-card absolute inset-0 bg-black/40 z-50 flex items-center justify-center p-2"
     onclick={handleBackdropClick}
   >
-    <div class="bg-base-100 w-full max-w-md rounded-2xl shadow-xl max-h-[calc(100vh-1rem)] overflow-y-auto">
+    <div class="bg-base-100 w-full max-w-md rounded-2xl shadow-xl max-h-[calc(100%-1rem)] overflow-y-auto">
       <div class="sticky top-0 bg-base-100 px-4 pt-4 pb-2 border-b border-base-300 flex items-start justify-between gap-2">
         <div class="flex-1 min-w-0">
           <h3 class="text-sm font-semibold text-base-content line-clamp-2">{profile.name}</h3>
