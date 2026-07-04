@@ -1,0 +1,48 @@
+src/lib/__tests__/actions.test.ts
+  s_a5772103a06c57::t_6f7702b54a1b30 1-5,11-13,15-97,99-118,120-132,134-177,179-190,192-196
+  s_a5772103a06c57::t_e1873802e7af02 191
+  s_a5772103a06c57::t_54936aaa213acc 98,119,133,178
+  s_a5772103a06c57::t_c6211921f5b2bb 6-10
+  s_a5772103a06c57::t_868be97f6a4d78 14
+tests-wdio/specs/visual-settings.js
+  s_a5772103a06c57::t_8bc217971a5206 75-76,79-84
+  s_a5772103a06c57::t_4a319072cae8ca 1-22,25,27-58,66-74,77-78,85-92
+  s_a5772103a06c57::t_642dc64f8ed587 59-65
+  s_a5772103a06c57::t_32ae9c71efba96 23-24,26
+src/lib/__tests__/priority-filter.test.ts
+  s_a5772103a06c57::t_fd68374174ace2 88-132
+  s_a5772103a06c57::t_8659ddcfb9d7e9 1-87,133
+src/lib/__tests__/settings.test.ts
+  s_a5772103a06c57::t_0183252b57b388 67-68
+  s_a5772103a06c57::t_9bd84c340c45a0 247-252
+  s_a5772103a06c57::t_e00760ef01b893 201-246,253
+src/lib/__tests__/domain.test.ts
+  s_a5772103a06c57::t_c2c99a0814f6cf 53-56
+src/lib/__tests__/fuzz.test.ts
+  s_a5772103a06c57::t_50a8a5a2d9bfb8 208-213
+  s_a5772103a06c57::t_c22561606e7feb 191-192
+tests-wdio/helpers/chrome-extension.js
+  s_a5772103a06c57::t_4ba2447fe4b35e 78-82,107-111,113,116-123,129-132
+tests-wdio/helpers/shared-setup.js
+  s_a5772103a06c57::t_abea5e4fab93b2 35,99-100,102-107
+tests-wdio/specs/13-notifications.js
+  s_a5772103a06c57::t_48a58cbe552abe 1-242
+tests-wdio/wdio.chrome.conf.js
+  s_a5772103a06c57::t_40a5e6c584010b 38-44,48-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fcbcf09895d0edae29010dea1d766fa47eab169f",
+  "prompts": {},
+  "sessions": {
+    "s_a5772103a06c57": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1030b83a-f832-4019-a425-60324315551c",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
