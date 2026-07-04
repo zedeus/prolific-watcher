@@ -7,6 +7,8 @@ import {
   PRIORITY_FILTERS_KEY,
   MAX_PRIORITY_FILTERS,
   MAX_PRIORITY_FILTER_RESEARCHERS,
+  MAX_PRIORITY_FILTER_STUDY_IDS,
+  ALL_STUDY_TYPES,
   LEGACY_PRIORITY_FILTER_ENABLED_KEY,
   LEGACY_PRIORITY_FILTER_AUTO_OPEN_NEW_TAB_KEY,
   LEGACY_PRIORITY_FILTER_ALERT_SOUND_ENABLED_KEY,
@@ -28,16 +30,20 @@ export interface PrioritySettingsLimits {
   minMinHourlyReward: number;
   maxEstimatedMinutes: number;
   minEstimatedMinutes: number;
+  maxMinEstimatedMinutes: number;
+  minMinEstimatedMinutes: number;
   maxMinimumPlaces: number;
   minMinimumPlaces: number;
   maxAlertSoundVolume: number;
   minAlertSoundVolume: number;
+  maxStudyIDs: number;
 }
 
 export interface PrioritySettingsDefaults {
   minimumRewardMajor: number;
   minimumHourlyRewardMajor: number;
   maximumEstimatedMinutes: number;
+  minimumEstimatedMinutes: number;
   minimumPlacesAvailable: number;
   alertSoundType: SoundType;
   alertSoundVolume: number;
@@ -101,6 +107,36 @@ export function createPrioritySettings(options: CreatePrioritySettingsOptions): 
     return out;
   }
 
+  function normalizePriorityStudyIDList(raw: unknown): string[] {
+    const values = Array.isArray(raw)
+      ? raw
+      : String(raw || '').split(',');
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+    for (const value of values) {
+      const id = String(value || '').trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      normalized.push(id);
+      if (normalized.length >= limits.maxStudyIDs) break;
+    }
+    return normalized;
+  }
+
+  function normalizeAllowedStudyTypes(raw: unknown): string[] {
+    if (!Array.isArray(raw)) return [];
+    const validSet = new Set(ALL_STUDY_TYPES as readonly string[]);
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const v of raw) {
+      const t = String(v || '').trim().toLowerCase();
+      if (!t || !validSet.has(t) || seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
+    }
+    return out;
+  }
+
   function canonicalPriorityAlertSoundType(value: unknown): SoundType {
     const raw = String(value || '').trim();
     if (PRIORITY_ALERT_SOUND_TYPES.has(raw as SoundType)) {
@@ -118,6 +154,7 @@ export function createPrioritySettings(options: CreatePrioritySettingsOptions): 
     const minimumRewardMajor = clampNumber(r.minimum_reward_major, limits.minMinReward, limits.maxMinReward, defaults.minimumRewardMajor);
     const minimumHourlyRewardMajor = clampNumber(r.minimum_hourly_reward_major, limits.minMinHourlyReward, limits.maxMinHourlyReward, defaults.minimumHourlyRewardMajor);
     const maximumEstimatedMinutes = clampInt(r.maximum_estimated_minutes, limits.minEstimatedMinutes, limits.maxEstimatedMinutes, defaults.maximumEstimatedMinutes);
+    const minimumEstimatedMinutes = clampInt(r.minimum_estimated_minutes, limits.minMinEstimatedMinutes, limits.maxMinEstimatedMinutes, defaults.minimumEstimatedMinutes);
     const minimumPlacesAvailable = clampInt(r.minimum_places_available, limits.minMinimumPlaces, limits.maxMinimumPlaces, defaults.minimumPlacesAvailable);
     const normalizedAlertSoundType = canonicalPriorityAlertSoundType(r.alert_sound_type);
     const alertSoundVolume = clampInt(r.alert_sound_volume, limits.minAlertSoundVolume, limits.maxAlertSoundVolume, defaults.alertSoundVolume);
@@ -144,11 +181,16 @@ export function createPrioritySettings(options: CreatePrioritySettingsOptions): 
       minimum_reward_major: Math.round(minimumRewardMajor * 100) / 100,
       minimum_hourly_reward_major: Math.round(minimumHourlyRewardMajor * 100) / 100,
       maximum_estimated_minutes: maximumEstimatedMinutes,
+      minimum_estimated_minutes: minimumEstimatedMinutes,
+      allowed_study_types: normalizeAllowedStudyTypes(r.allowed_study_types),
       minimum_places_available: minimumPlacesAvailable,
       match_keywords: normalizePriorityKeywordList(r.match_keywords ?? r.always_open_keywords),
       ignore_keywords: normalizePriorityKeywordList(r.ignore_keywords),
       match_researchers: normalizePriorityResearcherList(r.match_researchers ?? r.always_open_researchers),
       ignore_researchers: normalizePriorityResearcherList(r.ignore_researchers),
+      match_study_ids: normalizePriorityStudyIDList(r.match_study_ids),
+      ignore_study_ids: normalizePriorityStudyIDList(r.ignore_study_ids),
+      dry_run: r.dry_run === true,
     };
   }
 

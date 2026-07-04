@@ -1,5 +1,5 @@
 import type { Study, PriorityFilter, Money, ResearcherRef } from '../../lib/types';
-import { SOUND_TYPE_NONE } from '../../lib/constants';
+import { SOUND_TYPE_NONE, STUDY_TYPE_SCREENING, STUDY_TYPE_ONGOING, STUDY_TYPE_STANDARD } from '../../lib/constants';
 import { moneyMajorValue, studyUrlFromId, trimString } from '../../lib/format';
 
 function extractStudiesResults(payload: unknown): Study[] | null {
@@ -80,8 +80,25 @@ function studyMatchesResearcherList(study: Study, list: ResearcherRef[] | undefi
   return list.some((ref) => ref && typeof ref.id === 'string' && ref.id === id);
 }
 
+export function studyTypeCategory(study: Study | null | undefined): string {
+  if (study?.is_custom_screening) return STUDY_TYPE_SCREENING;
+  if (study?.is_ongoing_study) return STUDY_TYPE_ONGOING;
+  return STUDY_TYPE_STANDARD;
+}
+
+function studyMatchesIDList(study: Study, list: string[] | undefined): boolean {
+  if (!Array.isArray(list) || !list.length) return false;
+  const id = extractStudyID(study);
+  if (!id) return false;
+  return list.includes(id);
+}
+
 export function studyMatchesPriorityFilter(study: Study, filter: PriorityFilter, precomputedBlob?: string): boolean {
+  // Block lists (highest-priority exclusions)
   if (studyMatchesResearcherList(study, filter.ignore_researchers)) {
+    return false;
+  }
+  if (studyMatchesIDList(study, filter.ignore_study_ids)) {
     return false;
   }
   const keywordBlob = precomputedBlob ?? studyKeywordBlob(study);
@@ -90,13 +107,23 @@ export function studyMatchesPriorityFilter(study: Study, filter: PriorityFilter,
   }
 
   // Match lists are whitelists: when any is non-empty, the filter scopes to
-  // studies matching at least one entry. Both empty = no scope restriction.
+  // studies matching at least one entry. All empty = no scope restriction.
   const hasResearcherScope = Array.isArray(filter.match_researchers) && filter.match_researchers.length > 0;
   const hasKeywordScope = Array.isArray(filter.match_keywords) && filter.match_keywords.length > 0;
-  if (hasResearcherScope || hasKeywordScope) {
+  const hasStudyIDScope = Array.isArray(filter.match_study_ids) && filter.match_study_ids.length > 0;
+  if (hasResearcherScope || hasKeywordScope || hasStudyIDScope) {
     const researcherMatched = hasResearcherScope && studyMatchesResearcherList(study, filter.match_researchers);
     const keywordMatched = hasKeywordScope && hasAnyPriorityKeywordMatch(keywordBlob, filter.match_keywords);
-    if (!researcherMatched && !keywordMatched) {
+    const studyIDMatched = hasStudyIDScope && studyMatchesIDList(study, filter.match_study_ids);
+    if (!researcherMatched && !keywordMatched && !studyIDMatched) {
+      return false;
+    }
+  }
+
+  // Study type restriction
+  const allowedTypes = filter.allowed_study_types;
+  if (Array.isArray(allowedTypes) && allowedTypes.length > 0) {
+    if (!allowedTypes.includes(studyTypeCategory(study))) {
       return false;
     }
   }
@@ -116,6 +143,10 @@ export function studyMatchesPriorityFilter(study: Study, filter: PriorityFilter,
     return false;
   }
 
+  if (filter.minimum_estimated_minutes > 0 && estimatedMinutes < filter.minimum_estimated_minutes) {
+    return false;
+  }
+
   const placesAvailable = studyPlacesAvailable(study);
   if (!Number.isFinite(placesAvailable) || placesAvailable < filter.minimum_places_available) {
     return false;
@@ -131,7 +162,8 @@ function filterImportanceScore(study: Study, keywordBlob: string, filter: Priori
   // priority when multiple filters match the same study.
   if (
     hasAnyPriorityKeywordMatch(keywordBlob, filter.match_keywords) ||
-    studyMatchesResearcherList(study, filter.match_researchers)
+    studyMatchesResearcherList(study, filter.match_researchers) ||
+    studyMatchesIDList(study, filter.match_study_ids)
   ) {
     score += 1000;
   }

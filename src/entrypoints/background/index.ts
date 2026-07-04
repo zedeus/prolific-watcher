@@ -38,6 +38,7 @@ import {
   DEFAULT_PRIORITY_FILTER_MIN_REWARD,
   DEFAULT_PRIORITY_FILTER_MIN_HOURLY_REWARD,
   DEFAULT_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES,
+  DEFAULT_PRIORITY_FILTER_MIN_ESTIMATED_MINUTES,
   DEFAULT_PRIORITY_FILTER_MIN_PLACES,
   MIN_PRIORITY_FILTER_MIN_REWARD,
   MAX_PRIORITY_FILTER_MIN_REWARD,
@@ -45,9 +46,12 @@ import {
   MAX_PRIORITY_FILTER_MIN_HOURLY_REWARD,
   MIN_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES,
   MAX_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES,
+  MIN_PRIORITY_FILTER_MIN_ESTIMATED_MINUTES,
+  MAX_PRIORITY_FILTER_MIN_ESTIMATED_MINUTES,
   MIN_PRIORITY_FILTER_MIN_PLACES,
   MAX_PRIORITY_FILTER_MIN_PLACES,
   MAX_PRIORITY_FILTER_KEYWORDS,
+  MAX_PRIORITY_FILTER_STUDY_IDS,
   MAX_PRIORITY_STUDY_AUTO_OPEN_PER_BATCH,
   PRIORITY_KNOWN_STUDIES_TTL_MS,
   MAX_PRIORITY_KNOWN_STUDIES,
@@ -163,15 +167,19 @@ export default defineBackground({
         maxMinHourlyReward: MAX_PRIORITY_FILTER_MIN_HOURLY_REWARD,
         minEstimatedMinutes: MIN_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES,
         maxEstimatedMinutes: MAX_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES,
+        minMinEstimatedMinutes: MIN_PRIORITY_FILTER_MIN_ESTIMATED_MINUTES,
+        maxMinEstimatedMinutes: MAX_PRIORITY_FILTER_MIN_ESTIMATED_MINUTES,
         minMinimumPlaces: MIN_PRIORITY_FILTER_MIN_PLACES,
         maxMinimumPlaces: MAX_PRIORITY_FILTER_MIN_PLACES,
         minAlertSoundVolume: MIN_PRIORITY_ALERT_SOUND_VOLUME,
         maxAlertSoundVolume: MAX_PRIORITY_ALERT_SOUND_VOLUME,
+        maxStudyIDs: MAX_PRIORITY_FILTER_STUDY_IDS,
       },
       defaults: {
         minimumRewardMajor: DEFAULT_PRIORITY_FILTER_MIN_REWARD,
         minimumHourlyRewardMajor: DEFAULT_PRIORITY_FILTER_MIN_HOURLY_REWARD,
         maximumEstimatedMinutes: DEFAULT_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES,
+        minimumEstimatedMinutes: DEFAULT_PRIORITY_FILTER_MIN_ESTIMATED_MINUTES,
         minimumPlacesAvailable: DEFAULT_PRIORITY_FILTER_MIN_PLACES,
         alertSoundType: DEFAULT_PRIORITY_ALERT_SOUND_TYPE as SoundType,
         alertSoundVolume: DEFAULT_PRIORITY_ALERT_SOUND_VOLUME,
@@ -1461,6 +1469,10 @@ export default defineBackground({
         const matched = evaluation.matchesByFilterId.get(filter.id);
         if (!matched?.length) continue;
         for (const study of matched) studyFilterMap.set(study.id, filter);
+        if (filter.dry_run) {
+          pushDebugLog('priority.dry_run', { trigger: evaluation.event.trigger, filter: filter.name, candidate_count: matched.length, study_ids: matched.map(s => s.id) });
+          continue;
+        }
         if (filter.telegram_notify) {
           anyFilterNotify = true;
           tgNotifyStudies.push(...matched);

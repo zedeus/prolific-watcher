@@ -51,16 +51,20 @@ const TEST_LIMITS = {
   maxMinHourlyReward: 100,
   minEstimatedMinutes: 1,
   maxEstimatedMinutes: 240,
+  minMinEstimatedMinutes: 0,
+  maxMinEstimatedMinutes: 240,
   minMinimumPlaces: 1,
   maxMinimumPlaces: 1000,
   minAlertSoundVolume: 0,
   maxAlertSoundVolume: 100,
+  maxStudyIDs: 100,
 };
 
 const TEST_DEFAULTS = {
   minimumRewardMajor: 0,
   minimumHourlyRewardMajor: 10,
   maximumEstimatedMinutes: 20,
+  minimumEstimatedMinutes: 0,
   minimumPlacesAvailable: 1,
   alertSoundType: 'pay' as SoundType,
   alertSoundVolume: 100,
@@ -250,6 +254,163 @@ describe('normalizePriorityFilter', () => {
     expect(normalizePriorityFilter({ quiet_hours_start: '25:00' }).quiet_hours_start).toBe('23:00');
     expect(normalizePriorityFilter({ quiet_hours_end: '12:60' }).quiet_hours_end).toBe('07:00');
     expect(normalizePriorityFilter({ quiet_hours_start: '99:99' }).quiet_hours_start).toBe('23:00');
+  });
+
+  // ── New fields (issue #22) ────────────────────────────────────
+
+  it('clamps minimum_estimated_minutes to limits', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    expect(normalizePriorityFilter({ minimum_estimated_minutes: -5 }).minimum_estimated_minutes).toBe(0);
+    expect(normalizePriorityFilter({ minimum_estimated_minutes: 500 }).minimum_estimated_minutes).toBe(240);
+    expect(normalizePriorityFilter({ minimum_estimated_minutes: 10 }).minimum_estimated_minutes).toBe(10);
+  });
+
+  it('defaults minimum_estimated_minutes to 0 when missing', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    expect(normalizePriorityFilter({}).minimum_estimated_minutes).toBe(0);
+  });
+
+  it('normalizes allowed_study_types to valid values only', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({ allowed_study_types: ['standard', 'INVALID', 'ongoing'] });
+    expect(filter.allowed_study_types).toEqual(['standard', 'ongoing']);
+  });
+
+  it('defaults allowed_study_types to empty array', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    expect(normalizePriorityFilter({}).allowed_study_types).toEqual([]);
+  });
+
+  it('normalizes match_study_ids: dedupes, trims', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({ match_study_ids: ['abc', ' abc ', 'def', 'def'] });
+    expect(filter.match_study_ids).toEqual(['abc', 'def']);
+  });
+
+  it('parses comma-separated study ID strings', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({ match_study_ids: 'abc, def, ghi' });
+    expect(filter.match_study_ids).toEqual(['abc', 'def', 'ghi']);
+  });
+
+  it('normalizes ignore_study_ids', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({ ignore_study_ids: ['x', 'y'] });
+    expect(filter.ignore_study_ids).toEqual(['x', 'y']);
+  });
+
+  it('defaults dry_run to false', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    expect(normalizePriorityFilter({}).dry_run).toBe(false);
+  });
+
+  it('preserves dry_run when true', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    expect(normalizePriorityFilter({ dry_run: true }).dry_run).toBe(true);
+  });
+
+  // ── Adversarial: normalization garbage inputs ──────────────────
+
+  it('minimum_estimated_minutes defaults to 0 for NaN/undefined/null', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    expect(normalizePriorityFilter({ minimum_estimated_minutes: NaN }).minimum_estimated_minutes).toBe(0);
+    expect(normalizePriorityFilter({ minimum_estimated_minutes: undefined }).minimum_estimated_minutes).toBe(0);
+    expect(normalizePriorityFilter({ minimum_estimated_minutes: null }).minimum_estimated_minutes).toBe(0);
+    expect(normalizePriorityFilter({ minimum_estimated_minutes: 'garbage' }).minimum_estimated_minutes).toBe(0);
+  });
+
+  it('minimum_estimated_minutes clamps fractional input to integer', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    // clampInt uses parseInt, so 5.9 becomes 5
+    expect(normalizePriorityFilter({ minimum_estimated_minutes: 5.9 }).minimum_estimated_minutes).toBe(5);
+  });
+
+  it('allowed_study_types strips non-string items', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({
+      allowed_study_types: [null, undefined, 42, 'standard', '', false, 'ongoing'],
+    });
+    expect(filter.allowed_study_types).toEqual(['standard', 'ongoing']);
+  });
+
+  it('allowed_study_types deduplicates', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({
+      allowed_study_types: ['standard', 'standard', 'ongoing', 'ongoing'],
+    });
+    expect(filter.allowed_study_types).toEqual(['standard', 'ongoing']);
+  });
+
+  it('allowed_study_types lowercases input', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({
+      allowed_study_types: ['STANDARD', 'Ongoing', 'SCREENING'],
+    });
+    expect(filter.allowed_study_types).toEqual(['standard', 'ongoing', 'screening']);
+  });
+
+  it('allowed_study_types non-array input becomes empty array', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    expect(normalizePriorityFilter({ allowed_study_types: 'standard' }).allowed_study_types).toEqual([]);
+    expect(normalizePriorityFilter({ allowed_study_types: 42 }).allowed_study_types).toEqual([]);
+    expect(normalizePriorityFilter({ allowed_study_types: null }).allowed_study_types).toEqual([]);
+  });
+
+  it('match_study_ids strips empty strings after trimming', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({
+      match_study_ids: ['abc', '', '  ', 'def'],
+    });
+    expect(filter.match_study_ids).toEqual(['abc', 'def']);
+  });
+
+  it('ignore_study_ids strips empty strings', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({
+      ignore_study_ids: ['', 'x', '  '],
+    });
+    expect(filter.ignore_study_ids).toEqual(['x']);
+  });
+
+  it('match_study_ids caps at maxStudyIDs limit', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const ids = Array.from({ length: 200 }, (_, i) => `id-${i}`);
+    const filter = normalizePriorityFilter({ match_study_ids: ids });
+    expect(filter.match_study_ids).toHaveLength(TEST_LIMITS.maxStudyIDs);
+  });
+
+  it('ignore_study_ids caps at maxStudyIDs limit', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const ids = Array.from({ length: 200 }, (_, i) => `id-${i}`);
+    const filter = normalizePriorityFilter({ ignore_study_ids: ids });
+    expect(filter.ignore_study_ids).toHaveLength(TEST_LIMITS.maxStudyIDs);
+  });
+
+  it('match_study_ids dedupes case-sensitively', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({
+      match_study_ids: ['ABC', 'abc', 'Abc'],
+    });
+    // study IDs are case-sensitive (Prolific IDs are hex-like), all 3 are distinct
+    expect(filter.match_study_ids).toEqual(['ABC', 'abc', 'Abc']);
+  });
+
+  it('dry_run coerces truthy non-boolean to false', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    expect(normalizePriorityFilter({ dry_run: 'yes' }).dry_run).toBe(false);
+    expect(normalizePriorityFilter({ dry_run: 1 }).dry_run).toBe(false);
+    expect(normalizePriorityFilter({ dry_run: {} }).dry_run).toBe(false);
+  });
+
+  it('match_study_ids handles non-string items by coercing', () => {
+    const { normalizePriorityFilter } = createTestSettings();
+    const filter = normalizePriorityFilter({
+      match_study_ids: [42, null, undefined, true, 'real-id'],
+    });
+    // String(42)='42', String(null)='null', String(undefined)='undefined', String(true)='true'
+    // All non-empty after trim, so they get included
+    expect(filter.match_study_ids).toContain('42');
+    expect(filter.match_study_ids).toContain('real-id');
   });
 });
 

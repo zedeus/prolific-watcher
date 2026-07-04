@@ -1,9 +1,10 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { browser } from 'wxt/browser';
-  import type { PriorityFilter, NormalizedRefreshPolicy, SyncState, StudiesRefreshState, DebugLogEntry, TelegramSettings, ResearcherRef, FilterListField } from '../../../lib/types';
+  import type { Study, PriorityFilter, NormalizedRefreshPolicy, SyncState, StudiesRefreshState, DebugLogEntry, TelegramSettings, ResearcherRef, FilterListField } from '../../../lib/types';
   import type { SubmissionRecord, ResearcherRecord } from '../../../lib/db';
   import { createDefaultPriorityFilter } from '../../../lib/priority-filter';
+  import { studyMatchesPriorityFilter, studyRewardMajor, studyHourlyRewardMajor, studyEstimatedMinutes } from '../../background/domain';
   import ResearcherPicker from './ResearcherPicker.svelte';
   import type { ResearcherProfile } from '../../../lib/researcher-profile';
   import type { EarningsPrefs } from '../../../lib/earnings-prefs';
@@ -35,6 +36,11 @@
     MAX_PRIORITY_FILTER_MIN_PLACES,
     MAX_PRIORITY_FILTER_KEYWORDS,
     MAX_PRIORITY_FILTERS,
+    MIN_PRIORITY_FILTER_MIN_ESTIMATED_MINUTES,
+    MAX_PRIORITY_FILTER_MIN_ESTIMATED_MINUTES,
+    STUDY_TYPE_STANDARD,
+    STUDY_TYPE_ONGOING,
+    STUDY_TYPE_SCREENING,
     SOUND_TYPE_NONE,
     TELEGRAM_SETTINGS_PERSIST_DEBOUNCE_MS,
     TELEGRAM_VERIFY_DEBOUNCE_MS,
@@ -44,6 +50,7 @@
     active,
     autoOpenEnabled,
     priorityFilters = $bindable(),
+    liveStudies,
     telegramSettings,
     savedRefreshPolicy,
     extensionState,
@@ -67,6 +74,7 @@
     active: boolean;
     autoOpenEnabled: boolean;
     priorityFilters: PriorityFilter[];
+    liveStudies: Study[];
     telegramSettings: TelegramSettings;
     savedRefreshPolicy: NormalizedRefreshPolicy;
     extensionState: SyncState | null;
@@ -162,6 +170,7 @@
 
   // Local keyword text per filter — keeps text inputs editable without normalizing on every keystroke
   let keywordTextMap = $state(new Map<string, { match: string; ignore: string }>());
+  let studyIdTextMap = $state(new Map<string, { match: string; ignore: string }>());
 
   function syncKeywordMaps(filters: PriorityFilter[]) {
     const activeIds = new Set<string>();
@@ -173,10 +182,26 @@
           ignore: Array.isArray(f.ignore_keywords) ? f.ignore_keywords.join(', ') : '',
         });
       }
+      if (!studyIdTextMap.has(f.id)) {
+        studyIdTextMap.set(f.id, {
+          match: Array.isArray(f.match_study_ids) ? f.match_study_ids.join(', ') : '',
+          ignore: Array.isArray(f.ignore_study_ids) ? f.ignore_study_ids.join(', ') : '',
+        });
+      }
     }
     for (const id of keywordTextMap.keys()) {
-      if (!activeIds.has(id)) keywordTextMap.delete(id);
+      if (!activeIds.has(id)) {
+        keywordTextMap.delete(id);
+        studyIdTextMap.delete(id);
+      }
     }
+  }
+
+  let previewExpandedFilterId = $state('');
+
+  function filterPreviewMatches(filter: PriorityFilter): Study[] {
+    if (!liveStudies.length) return [];
+    return liveStudies.filter((s: Study) => studyMatchesPriorityFilter(s, filter));
   }
 
   const filterIds = $derived(priorityFilters.map((f: PriorityFilter) => f.id).join(','));
@@ -343,6 +368,7 @@
     'studies.response.capture.on_parsed_error': 'Response parse hook failed',
     'settings.auto_open.updated': 'Auto-open updated',
     'settings.priority_filters.updated': 'Priority filters saved',
+    'priority.dry_run': 'Test mode match (no action)',
     'priority.alert.disabled': 'Priority alert disabled',
     'tab.priority_auto_open.created': 'Priority study opened',
     'tab.priority_auto_open.disabled_new_tab': 'Priority tab auto-open disabled',
@@ -372,10 +398,26 @@
     return unique;
   }
 
+  function normalizeStudyIdList(text: string): string[] {
+    const values = text.split(',');
+    const seen = new Set<string>();
+    const unique: string[] = [];
+    for (const item of values) {
+      const id = item.trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      unique.push(id);
+    }
+    return unique;
+  }
+
   function handleFilterInput(filter: PriorityFilter) {
     const kw = keywordTextMap.get(filter.id);
     filter.match_keywords = normalizePriorityKeywords(kw?.match || '');
     filter.ignore_keywords = normalizePriorityKeywords(kw?.ignore || '');
+    const sid = studyIdTextMap.get(filter.id);
+    filter.match_study_ids = normalizeStudyIdList(sid?.match || '');
+    filter.ignore_study_ids = normalizeStudyIdList(sid?.ignore || '');
     onPriorityFiltersChange();
   }
 
@@ -383,6 +425,28 @@
     const kw = keywordTextMap.get(filter.id) || { match: '', ignore: '' };
     kw[field] = value;
     keywordTextMap.set(filter.id, kw);
+    handleFilterInput(filter);
+  }
+
+  function handleStudyIdInput(filter: PriorityFilter, field: FilterListField, value: string) {
+    const sid = studyIdTextMap.get(filter.id) || { match: '', ignore: '' };
+    sid[field] = value;
+    studyIdTextMap.set(filter.id, sid);
+    handleFilterInput(filter);
+  }
+
+  function handleStudyTypeToggle(filter: PriorityFilter, studyType: string, checked: boolean) {
+    let current = Array.isArray(filter.allowed_study_types) && filter.allowed_study_types.length
+      ? [...filter.allowed_study_types]
+      : [STUDY_TYPE_STANDARD, STUDY_TYPE_ONGOING, STUDY_TYPE_SCREENING];
+    if (checked && !current.includes(studyType)) {
+      current.push(studyType);
+    } else if (!checked) {
+      current = current.filter((t: string) => t !== studyType);
+    }
+    // All three checked = no restriction (empty array)
+    if (current.length >= 3) current = [];
+    filter.allowed_study_types = current;
     handleFilterInput(filter);
   }
 
@@ -396,6 +460,7 @@
     if (priorityFilters.length >= MAX_PRIORITY_FILTERS) return;
     const newFilter = createDefaultPriorityFilter({ name: `Filter ${priorityFilters.length + 1}` });
     keywordTextMap.set(newFilter.id, { match: '', ignore: '' });
+    studyIdTextMap.set(newFilter.id, { match: '', ignore: '' });
     priorityFilters = [...priorityFilters, newFilter];
     expandedFilterId = newFilter.id;
     onPriorityFiltersChange();
@@ -415,6 +480,7 @@
     deleteConfirmId = '';
     priorityFilters = priorityFilters.filter((f: PriorityFilter) => f.id !== filterId);
     keywordTextMap.delete(filterId);
+    studyIdTextMap.delete(filterId);
     if (expandedFilterId === filterId) expandedFilterId = '';
     onPriorityFiltersChange();
   }
@@ -430,9 +496,14 @@
     if (f.minimum_reward_major > 0) badges.push({ label: `$${f.minimum_reward_major}+` });
     if (f.minimum_hourly_reward_major > 0) badges.push({ label: `$${f.minimum_hourly_reward_major}/hr` });
     if (f.maximum_estimated_minutes < MAX_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES) badges.push({ label: `\u2264${f.maximum_estimated_minutes}m` });
+    if (f.minimum_estimated_minutes > 0) badges.push({ label: `\u2265${f.minimum_estimated_minutes}m` });
+    if (f.allowed_study_types?.length) badges.push({ label: f.allowed_study_types.join('/') });
     if (f.match_keywords.length) badges.push({ label: `${f.match_keywords.length} kw` });
     const researcherCount = (f.match_researchers?.length || 0) + (f.ignore_researchers?.length || 0);
     if (researcherCount > 0) badges.push({ label: `${researcherCount} r` });
+    const studyIdCount = (f.match_study_ids?.length || 0) + (f.ignore_study_ids?.length || 0);
+    if (studyIdCount > 0) badges.push({ label: `${studyIdCount} ids` });
+    if (f.dry_run) badges.push({ label: 'test mode' });
     if (f.auto_open_in_new_tab) badges.push({ label: 'auto-open' });
     if (f.desktop_notify) badges.push({ label: 'desktop' });
     if (f.telegram_notify && tg.enabled) badges.push({ label: 'telegram' });
@@ -865,6 +936,8 @@
             </div>
 
             {#if isExpanded}
+            {@const previewMatches = filterPreviewMatches(filter)}
+            {@const isPreviewExpanded = previewExpandedFilterId === filter.id}
             <div class="px-3 pb-3 pt-0.5 flex flex-col gap-2">
               <div class="grid grid-cols-[100px_1fr_100px_1fr] items-center gap-x-2 gap-y-1.5">
                 <label for="priorityMinRewardInput-{idx}" class="text-[12.5px] text-base-content/50 font-medium">Min reward</label>
@@ -898,6 +971,17 @@
                   max={MAX_PRIORITY_FILTER_MAX_ESTIMATED_MINUTES}
                   step="1"
                   bind:value={filter.maximum_estimated_minutes}
+                  oninput={() => handleFilterInput(filter)}
+                />
+                <label for="priorityMinEtaInput-{idx}" class="text-[12.5px] text-base-content/50 font-medium">Min ETA (mins)</label>
+                <input
+                  id="priorityMinEtaInput-{idx}"
+                  type="number"
+                  class="input input-xs w-full tabular-nums"
+                  min={MIN_PRIORITY_FILTER_MIN_ESTIMATED_MINUTES}
+                  max={MAX_PRIORITY_FILTER_MIN_ESTIMATED_MINUTES}
+                  step="1"
+                  bind:value={filter.minimum_estimated_minutes}
                   oninput={() => handleFilterInput(filter)}
                 />
                 <label for="priorityMinPlacesInput-{idx}" class="text-[12.5px] text-base-content/50 font-medium">Min places</label>
@@ -965,13 +1049,90 @@
                 </div>
               </div>
 
-              {#if (filter.match_keywords?.length || 0) + (filter.match_researchers?.length || 0) > 0}
+              <div class="grid grid-cols-2 gap-x-2">
+                <div>
+                  <label for="priorityMatchStudyIdsInput-{idx}" class="text-[12.5px] text-base-content/50 font-medium block mb-0.5">Match study IDs</label>
+                  <input
+                    id="priorityMatchStudyIdsInput-{idx}"
+                    type="text"
+                    class="input input-xs w-full font-mono text-[11px]"
+                    spellcheck="false"
+                    placeholder="from Prolific URL"
+                    value={studyIdTextMap.get(filter.id)?.match || ''}
+                    oninput={(e) => handleStudyIdInput(filter, 'match', (e.target as HTMLInputElement).value)}
+                  />
+                </div>
+                <div>
+                  <label for="priorityIgnoreStudyIdsInput-{idx}" class="text-[12.5px] text-base-content/50 font-medium block mb-0.5">Ignore study IDs</label>
+                  <input
+                    id="priorityIgnoreStudyIdsInput-{idx}"
+                    type="text"
+                    class="input input-xs w-full font-mono text-[11px]"
+                    spellcheck="false"
+                    placeholder="from Prolific URL"
+                    value={studyIdTextMap.get(filter.id)?.ignore || ''}
+                    oninput={(e) => handleStudyIdInput(filter, 'ignore', (e.target as HTMLInputElement).value)}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div class="text-[12.5px] text-base-content/50 font-medium mb-1">Study types</div>
+                <div class="flex items-center gap-3">
+                  <label class="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      class="checkbox checkbox-xs checkbox-primary"
+                      checked={!filter.allowed_study_types?.length || filter.allowed_study_types.includes(STUDY_TYPE_STANDARD)}
+                      onchange={(e) => handleStudyTypeToggle(filter, STUDY_TYPE_STANDARD, (e.target as HTMLInputElement).checked)}
+                    />
+                    <span class="text-[12px] text-base-content/60">Standard</span>
+                  </label>
+                  <label class="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      class="checkbox checkbox-xs checkbox-primary"
+                      checked={!filter.allowed_study_types?.length || filter.allowed_study_types.includes(STUDY_TYPE_ONGOING)}
+                      onchange={(e) => handleStudyTypeToggle(filter, STUDY_TYPE_ONGOING, (e.target as HTMLInputElement).checked)}
+                    />
+                    <span class="text-[12px] text-base-content/60">Ongoing</span>
+                  </label>
+                  <label class="flex items-center gap-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      class="checkbox checkbox-xs checkbox-primary"
+                      checked={!filter.allowed_study_types?.length || filter.allowed_study_types.includes(STUDY_TYPE_SCREENING)}
+                      onchange={(e) => handleStudyTypeToggle(filter, STUDY_TYPE_SCREENING, (e.target as HTMLInputElement).checked)}
+                    />
+                    <span class="text-[12px] text-base-content/60">Screening</span>
+                  </label>
+                </div>
+                {#if filter.allowed_study_types?.length}
+                  <div class="text-[10.5px] text-base-content/35 mt-0.5">Only studies of checked types will match.</div>
+                {/if}
+              </div>
+
+              {#if (filter.match_keywords?.length || 0) + (filter.match_researchers?.length || 0) + (filter.match_study_ids?.length || 0) > 0}
                 <div class="text-[10.5px] text-base-content/45 leading-snug -mt-0.5">
                   This filter is scoped to studies matching a "match" entry. Other studies won't trigger it.
                 </div>
               {/if}
 
               <div class="grid grid-cols-[100px_1fr] items-center gap-x-2 gap-y-1.5">
+                <label for="priorityDryRunToggle-{idx}" class="text-[12.5px] text-base-content/50 font-medium">Test mode</label>
+                <div class="flex items-center gap-2">
+                  <input
+                    id="priorityDryRunToggle-{idx}"
+                    type="checkbox"
+                    class="toggle toggle-warning toggle-xs"
+                    aria-label="Test mode"
+                    bind:checked={filter.dry_run}
+                    onchange={() => handleFilterInput(filter)}
+                  />
+                  {#if filter.dry_run}
+                    <span class="text-[10px] text-warning">Matches are logged but won't trigger sounds or tabs</span>
+                  {/if}
+                </div>
                 <label for="priorityAutoOpenInNewTabToggle-{idx}" class="text-[12.5px] text-base-content/50 font-medium">Auto-open tab</label>
                 <div>
                   <input
@@ -1070,6 +1231,40 @@
                     />
                   {/if}
                 </div>
+              </div>
+
+              <div class="border-t border-base-300 pt-2 -mx-3 px-3">
+                <button
+                  class="btn btn-ghost btn-xs text-[11px] w-full justify-start gap-1.5 h-auto py-1 font-normal"
+                  type="button"
+                  onclick={() => { previewExpandedFilterId = isPreviewExpanded ? '' : filter.id; }}
+                >
+                  <span class="text-base-content/40">{isPreviewExpanded ? '▾' : '▸'}</span>
+                  <span class="tabular-nums font-medium {previewMatches.length > 0 ? 'text-primary' : 'text-base-content/50'}">
+                    {previewMatches.length} of {liveStudies.length} live studies match
+                  </span>
+                </button>
+                {#if isPreviewExpanded && previewMatches.length > 0}
+                  <div class="mt-1 mb-1 flex flex-col gap-0.5 max-h-[180px] overflow-y-auto">
+                    {#each previewMatches as study (study.id)}
+                      {@const reward = studyRewardMajor(study)}
+                      {@const hourly = studyHourlyRewardMajor(study)}
+                      {@const mins = studyEstimatedMinutes(study)}
+                      <div class="flex items-baseline gap-1.5 text-[11px] px-1 py-0.5 rounded hover:bg-base-200/50">
+                        <span class="text-base-content/70 truncate flex-1 min-w-0" title={study.name}>{study.name}</span>
+                        <span class="text-base-content/50 tabular-nums flex-shrink-0">
+                          {#if Number.isFinite(reward)}£{reward.toFixed(2)}{/if}
+                          {#if Number.isFinite(hourly)}<span class="text-base-content/30">·</span> £{hourly.toFixed(2)}/hr{/if}
+                          {#if Number.isFinite(mins)}<span class="text-base-content/30">·</span> {Math.round(mins)}m{/if}
+                        </span>
+                      </div>
+                    {/each}
+                  </div>
+                {:else if isPreviewExpanded && liveStudies.length === 0}
+                  <div class="text-[11px] text-base-content/30 px-1 py-1">No live studies right now. Open Prolific to start seeing matches.</div>
+                {:else if isPreviewExpanded}
+                  <div class="text-[11px] text-base-content/30 px-1 py-1">No live studies match this filter. Try relaxing your criteria.</div>
+                {/if}
               </div>
             </div>
             {/if}

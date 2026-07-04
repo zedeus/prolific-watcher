@@ -833,6 +833,7 @@
     active={activeTab === 'settings'}
     {autoOpenEnabled}
     bind:priorityFilters
+    liveStudies={studies}
     {telegramSettings}
     {savedRefreshPolicy}
     {extensionState}

@@ -98,10 +98,15 @@ export interface PriorityFilter {
   minimum_hourly_reward_major: number;
   maximum_estimated_minutes: number;
   minimum_places_available: number;
+  minimum_estimated_minutes: number;
+  allowed_study_types: string[];
   match_keywords: string[];
   ignore_keywords: string[];
   match_researchers: ResearcherRef[];
   ignore_researchers: ResearcherRef[];
+  match_study_ids: string[];
+  ignore_study_ids: string[];
+  dry_run: boolean;
 }
 
 export interface TelegramMessageFormatOptions {

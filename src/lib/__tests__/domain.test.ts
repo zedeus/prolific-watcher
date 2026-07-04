@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   studyMatchesPriorityFilter,
   studyKeywordBlob,
+  studyTypeCategory,
   evaluatePrioritySnapshotEvent,
 } from '../../entrypoints/background/domain';
 import type { Study, PriorityFilter } from '../types';
@@ -57,11 +58,16 @@ function makeFilter(overrides: Partial<PriorityFilter> = {}): PriorityFilter {
     minimum_reward_major: 0,
     minimum_hourly_reward_major: 0,
     maximum_estimated_minutes: 240,
+    minimum_estimated_minutes: 0,
     minimum_places_available: 1,
+    allowed_study_types: [],
     match_keywords: [],
     ignore_keywords: [],
     match_researchers: [],
     ignore_researchers: [],
+    match_study_ids: [],
+    ignore_study_ids: [],
+    dry_run: false,
     ...overrides,
   };
 }
@@ -281,6 +287,305 @@ describe('studyMatchesPriorityFilter', () => {
     });
     // Non-empty match_researchers list + no matching id → filter rejects.
     expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  // ── minimum_estimated_minutes (duration lower bound) ──────────
+
+  it('rejects study below minimum_estimated_minutes', () => {
+    const study = makeStudy({ estimated_completion_time: 3 });
+    const filter = makeFilter({ minimum_estimated_minutes: 5 });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  it('accepts study at exactly minimum_estimated_minutes', () => {
+    const study = makeStudy({ estimated_completion_time: 5 });
+    const filter = makeFilter({ minimum_estimated_minutes: 5 });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(true);
+  });
+
+  it('accepts study above minimum_estimated_minutes', () => {
+    const study = makeStudy({ estimated_completion_time: 10 });
+    const filter = makeFilter({ minimum_estimated_minutes: 5 });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(true);
+  });
+
+  it('minimum_estimated_minutes=0 skips the lower bound check', () => {
+    const study = makeStudy({ estimated_completion_time: 1 });
+    const filter = makeFilter({ minimum_estimated_minutes: 0 });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(true);
+  });
+
+  // ── allowed_study_types ───────────────────────────────────────
+
+  it('empty allowed_study_types matches all types', () => {
+    const standard = makeStudy({ is_ongoing_study: false, is_custom_screening: false });
+    const ongoing = makeStudy({ is_ongoing_study: true });
+    const screening = makeStudy({ is_custom_screening: true });
+    const filter = makeFilter({ allowed_study_types: [] });
+    expect(studyMatchesPriorityFilter(standard, filter)).toBe(true);
+    expect(studyMatchesPriorityFilter(ongoing, filter)).toBe(true);
+    expect(studyMatchesPriorityFilter(screening, filter)).toBe(true);
+  });
+
+  it('allowed_study_types=["standard"] rejects ongoing and screening', () => {
+    const standard = makeStudy({ is_ongoing_study: false, is_custom_screening: false });
+    const ongoing = makeStudy({ is_ongoing_study: true });
+    const screening = makeStudy({ is_custom_screening: true });
+    const filter = makeFilter({ allowed_study_types: ['standard'] });
+    expect(studyMatchesPriorityFilter(standard, filter)).toBe(true);
+    expect(studyMatchesPriorityFilter(ongoing, filter)).toBe(false);
+    expect(studyMatchesPriorityFilter(screening, filter)).toBe(false);
+  });
+
+  it('allowed_study_types=["ongoing"] rejects standard and screening', () => {
+    const standard = makeStudy({ is_ongoing_study: false, is_custom_screening: false });
+    const ongoing = makeStudy({ is_ongoing_study: true });
+    const filter = makeFilter({ allowed_study_types: ['ongoing'] });
+    expect(studyMatchesPriorityFilter(standard, filter)).toBe(false);
+    expect(studyMatchesPriorityFilter(ongoing, filter)).toBe(true);
+  });
+
+  it('allowed_study_types with multiple values accepts any matching type', () => {
+    const standard = makeStudy({ is_ongoing_study: false, is_custom_screening: false });
+    const ongoing = makeStudy({ is_ongoing_study: true });
+    const filter = makeFilter({ allowed_study_types: ['standard', 'ongoing'] });
+    expect(studyMatchesPriorityFilter(standard, filter)).toBe(true);
+    expect(studyMatchesPriorityFilter(ongoing, filter)).toBe(true);
+  });
+
+  // ── ignore_study_ids ──────────────────────────────────────────
+
+  it('rejects study in ignore_study_ids', () => {
+    const study = makeStudy({ id: 'study-blocked' });
+    const filter = makeFilter({ ignore_study_ids: ['study-blocked'] });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  it('accepts study not in ignore_study_ids', () => {
+    const study = makeStudy({ id: 'study-ok' });
+    const filter = makeFilter({ ignore_study_ids: ['study-blocked'] });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(true);
+  });
+
+  // ── match_study_ids ───────────────────────────────────────────
+
+  it('match_study_ids scopes filter to those IDs', () => {
+    const target = makeStudy({ id: 'study-target' });
+    const other = makeStudy({ id: 'study-other' });
+    const filter = makeFilter({ match_study_ids: ['study-target'] });
+    expect(studyMatchesPriorityFilter(target, filter)).toBe(true);
+    expect(studyMatchesPriorityFilter(other, filter)).toBe(false);
+  });
+
+  it('match_study_ids OR with match_keywords (either matches)', () => {
+    const study = makeStudy({ id: 'study-1', name: 'AI Survey' });
+    const filter = makeFilter({ match_study_ids: ['study-2'], match_keywords: ['ai'] });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(true);
+  });
+
+  it('ignore_study_ids take precedence over match_study_ids', () => {
+    const study = makeStudy({ id: 'study-1' });
+    const filter = makeFilter({
+      match_study_ids: ['study-1'],
+      ignore_study_ids: ['study-1'],
+    });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  // ── Adversarial: minimum_estimated_minutes edge cases ──────────
+
+  it('rejects study with NaN estimated_completion_time when minimum_estimated_minutes > 0', () => {
+    const study = makeStudy({ estimated_completion_time: NaN as any });
+    const filter = makeFilter({ minimum_estimated_minutes: 5 });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  it('accepts study with NaN estimated_completion_time when minimum_estimated_minutes = 0', () => {
+    const study = makeStudy({ estimated_completion_time: NaN as any });
+    const filter = makeFilter({ minimum_estimated_minutes: 0, maximum_estimated_minutes: 240 });
+    // min=0 skips the lower bound, but max check still runs — NaN fails isFinite → rejected
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  it('rejects study with undefined estimated_completion_time when min > 0', () => {
+    const raw = makeStudy() as any;
+    delete raw.estimated_completion_time;
+    delete raw.average_completion_time_in_seconds;
+    const filter = makeFilter({ minimum_estimated_minutes: 1 });
+    expect(studyMatchesPriorityFilter(raw as Study, filter)).toBe(false);
+  });
+
+  it('handles minimum_estimated_minutes > maximum_estimated_minutes (impossible window)', () => {
+    const study = makeStudy({ estimated_completion_time: 15 });
+    const filter = makeFilter({ minimum_estimated_minutes: 20, maximum_estimated_minutes: 10 });
+    // 15 > max(10) → rejected by max check
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+
+    const study2 = makeStudy({ estimated_completion_time: 5 });
+    // 5 < min(20) → rejected by min check
+    expect(studyMatchesPriorityFilter(study2, filter)).toBe(false);
+
+    const study3 = makeStudy({ estimated_completion_time: 15 });
+    const filter2 = makeFilter({ minimum_estimated_minutes: 10, maximum_estimated_minutes: 5 });
+    // 15 > max(5) → rejected
+    expect(studyMatchesPriorityFilter(study3, filter2)).toBe(false);
+  });
+
+  it('minimum_estimated_minutes boundary: study at exactly the boundary passes', () => {
+    const study = makeStudy({ estimated_completion_time: 10 });
+    const filter = makeFilter({ minimum_estimated_minutes: 10, maximum_estimated_minutes: 10 });
+    // 10 <= 10 AND 10 >= 10 → passes both bounds
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(true);
+  });
+
+  it('study with estimated_completion_time of 0 passes when minimum_estimated_minutes is 0', () => {
+    const study = makeStudy({ estimated_completion_time: 0 });
+    const filter = makeFilter({ minimum_estimated_minutes: 0 });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(true);
+  });
+
+  it('study with estimated_completion_time of 0 fails when minimum_estimated_minutes > 0', () => {
+    const study = makeStudy({ estimated_completion_time: 0 });
+    const filter = makeFilter({ minimum_estimated_minutes: 1 });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  // ── Adversarial: allowed_study_types edge cases ────────────────
+
+  it('allowed_study_types with invalid values only acts like no restriction', () => {
+    const study = makeStudy();
+    // After normalization ['BOGUS'] would be stripped to [], but testing domain logic directly
+    const filter = makeFilter({ allowed_study_types: ['BOGUS'] });
+    // 'standard' is NOT in ['BOGUS'] → rejected
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  it('allowed_study_types with duplicates still works', () => {
+    const study = makeStudy();
+    const filter = makeFilter({ allowed_study_types: ['standard', 'standard', 'standard'] });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(true);
+  });
+
+  it('allowed_study_types does not interact with scope gate (match_keywords)', () => {
+    const study = makeStudy({ name: 'AI Survey', is_ongoing_study: true });
+    const filter = makeFilter({
+      match_keywords: ['ai'],
+      allowed_study_types: ['standard'],
+    });
+    // keyword matches (passes scope), but study type is ongoing, not in allowed → rejected
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  it('study both ongoing and screening categorized as screening for allowed_study_types', () => {
+    const study = makeStudy({ is_ongoing_study: true, is_custom_screening: true });
+    const filterOngoing = makeFilter({ allowed_study_types: ['ongoing'] });
+    const filterScreening = makeFilter({ allowed_study_types: ['screening'] });
+    expect(studyMatchesPriorityFilter(study, filterOngoing)).toBe(false);
+    expect(studyMatchesPriorityFilter(study, filterScreening)).toBe(true);
+  });
+
+  // ── Adversarial: study ID list edge cases ──────────────────────
+
+  it('empty strings in match_study_ids do not match study with empty id', () => {
+    const study = makeStudy({ id: '' });
+    const filter = makeFilter({ match_study_ids: [''] });
+    // extractStudyID returns '' when id is empty → studyMatchesIDList returns false (no id)
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  it('empty strings in ignore_study_ids do not block normal studies', () => {
+    const study = makeStudy({ id: 'real-study' });
+    const filter = makeFilter({ ignore_study_ids: [''] });
+    // '' doesn't match 'real-study', so should pass
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(true);
+  });
+
+  it('match_study_ids + match_researchers + match_keywords all OR together', () => {
+    const study = makeStudy({
+      id: 'study-x',
+      name: 'Generic',
+      researcher: { id: 'r-other', name: 'Other', country: 'GB' },
+    });
+    const filter = makeFilter({
+      match_study_ids: ['study-x'],
+      match_keywords: ['nonexistent'],
+      match_researchers: [{ id: 'r-nobody', name: 'Nobody' }],
+    });
+    // Only study ID matches — should still pass via OR
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(true);
+  });
+
+  it('ignore_study_ids blocks even when match_keywords would match', () => {
+    const study = makeStudy({ id: 'blocked', name: 'AI Study' });
+    const filter = makeFilter({
+      match_keywords: ['ai'],
+      ignore_study_ids: ['blocked'],
+    });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  it('ignore_study_ids blocks even when match_researchers would match', () => {
+    const study = makeStudy({
+      id: 'blocked',
+      researcher: { id: 'r-fav', name: 'Fav Lab', country: 'GB' },
+    });
+    const filter = makeFilter({
+      match_researchers: [{ id: 'r-fav', name: 'Fav Lab' }],
+      ignore_study_ids: ['blocked'],
+    });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  it('match_study_ids with no other scope still enforces numeric criteria', () => {
+    const study = makeStudy({
+      id: 'study-target',
+      reward: { amount: 50, currency: 'GBP' },
+    });
+    const filter = makeFilter({
+      match_study_ids: ['study-target'],
+      minimum_reward_major: 10,
+    });
+    // study matches ID scope, but reward is 0.50 < 10 → rejected
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+
+  it('match_study_ids with no other scope still enforces allowed_study_types', () => {
+    const study = makeStudy({ id: 'target', is_ongoing_study: true });
+    const filter = makeFilter({
+      match_study_ids: ['target'],
+      allowed_study_types: ['standard'],
+    });
+    expect(studyMatchesPriorityFilter(study, filter)).toBe(false);
+  });
+});
+
+// ── studyTypeCategory ───────────────────────────────────────────
+
+describe('studyTypeCategory', () => {
+  it('returns standard for regular study', () => {
+    expect(studyTypeCategory(makeStudy())).toBe('standard');
+  });
+
+  it('returns ongoing for ongoing study', () => {
+    expect(studyTypeCategory(makeStudy({ is_ongoing_study: true }))).toBe('ongoing');
+  });
+
+  it('returns screening for custom screening study', () => {
+    expect(studyTypeCategory(makeStudy({ is_custom_screening: true }))).toBe('screening');
+  });
+
+  it('screening takes priority over ongoing', () => {
+    expect(studyTypeCategory(makeStudy({ is_ongoing_study: true, is_custom_screening: true }))).toBe('screening');
+  });
+
+  it('returns standard for null/undefined study', () => {
+    expect(studyTypeCategory(null)).toBe('standard');
+    expect(studyTypeCategory(undefined)).toBe('standard');
+  });
+
+  it('returns standard when boolean flags are missing', () => {
+    const raw = { id: 'x', name: 'X' } as any;
+    expect(studyTypeCategory(raw)).toBe('standard');
   });
 });
 
