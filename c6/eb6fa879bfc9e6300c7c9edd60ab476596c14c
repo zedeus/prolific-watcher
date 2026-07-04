@@ -1,0 +1,19 @@
+src/entrypoints/popup/components/SettingsPanel.svelte
+  s_cbd2eaa2b63121::t_bd634c537598a5 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c6eb6fa879bfc9e6300c7c9edd60ab476596c14c",
+  "prompts": {},
+  "sessions": {
+    "s_cbd2eaa2b63121": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "81163204-5d74-4e0a-b28d-a9be0446eec0",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
