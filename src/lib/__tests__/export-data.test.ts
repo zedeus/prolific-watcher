@@ -317,6 +317,10 @@ describe('submissionsToCsv round-trips through parseProlificCsv', () => {
     expect(reimported).toHaveLength(1);
     const p = reimported[0].payload;
 
+    // Real study id round-trips on the record (links back to observed studies),
+    // not a csv: slug.
+    expect(reimported[0].study_id).toBe('study-xyz');
+
     expect(researcherRefFromPayload(p)).toEqual({ id: 'r-42', name: 'Dr Ada', country: 'GB' });
     const meta = extractSubmissionMeta(p);
     expect(meta.institution_name).toBe('Somewhere Uni');
@@ -338,11 +342,13 @@ describe('submissionsToCsv round-trips through parseProlificCsv', () => {
     const recs = parseProlificCsv(csv).records;
     expect(recs).toHaveLength(1);
     expect(researcherRefFromPayload(recs[0].payload)).toBeNull();
+    // No Study ID column → falls back to the csv: slug, as before.
+    expect(recs[0].study_id).toBe('csv:plain-study');
   });
 
   it('appends the enriched columns to the header', () => {
     const header = submissionsToCsv([]).split('\r\n')[0].toLowerCase();
-    for (const col of ['researcher', 'researcher id', 'institution', 'trial', 'return reason', 'researcher feedback']) {
+    for (const col of ['study id', 'researcher', 'researcher id', 'institution', 'trial', 'return reason', 'researcher feedback']) {
       expect(header).toContain(col);
     }
   });

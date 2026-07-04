@@ -133,6 +133,7 @@ export function parseProlificCsv(text: string): CsvImportResult {
     status: header.indexOf('status'),
     // Enriched columns Prolific Pulse adds on export (all optional — a stock
     // Prolific CSV simply won't have them, so these stay -1 and are skipped).
+    studyId: header.indexOf('study id'),
     researcher: header.indexOf('researcher'),
     researcherId: header.indexOf('researcher id'),
     researcherCountry: header.indexOf('researcher country'),
@@ -182,6 +183,10 @@ export function parseProlificCsv(text: string): CsvImportResult {
     // Reconstruct the extension-only fields (researcher/institution/trial) that
     // Prolific's own CSV lacks, so an enriched export round-trips them back into
     // the same payload shape the analytics read (study.researcher, is_trial_study).
+    // Real Prolific study id (enriched export only) — set on the record so a
+    // re-imported row links back to observed studies (by-study-type breakdown,
+    // per-study grouping key off the record's study_id, not payload.study.id).
+    const realStudyId = cell(idx.studyId);
     const study: Record<string, unknown> = { name: studyName };
     const researcherId = cell(idx.researcherId);
     const researcherName = cell(idx.researcher);
@@ -231,7 +236,7 @@ export function parseProlificCsv(text: string): CsvImportResult {
 
     out.push({
       submission_id: submissionId,
-      study_id: `${CSV_SUBMISSION_ID_PREFIX}${slugify(studyName)}`,
+      study_id: realStudyId || `${CSV_SUBMISSION_ID_PREFIX}${slugify(studyName)}`,
       study_name: studyName,
       participant_id: CSV_IMPORT_SOURCE,
       status,

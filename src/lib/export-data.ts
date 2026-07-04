@@ -83,6 +83,7 @@ export const SUBMISSIONS_CSV_HEADER = [
   'Completion code',
   // Extension-only columns Prolific's own export lacks. The importer reads these
   // back when present, and ignores them on a stock Prolific CSV.
+  'Study ID',
   'Researcher',
   'Researcher ID',
   'Researcher country',
@@ -165,6 +166,7 @@ export function submissionToRow(record: SubmissionRecord): string[] {
     extractCompletionCode(payload),
     // Extension-only fields (missing from Prolific's CSV), via the same
     // extractors the analytics use so both payload shapes are handled.
+    record.study_id,
     researcher?.name ?? '',
     researcher?.id ?? '',
     researcher?.country ?? meta.researcher_country ?? '',
