@@ -1,0 +1,23 @@
+src/entrypoints/background/index.ts
+  s_dacc1ec092764c::t_1bd7149e6427cc 487-497
+  s_dacc1ec092764c::t_aa1ef122c53b9a 2
+  s_dacc1ec092764c::t_0aed755526f81c 958
+  s_dacc1ec092764c::t_1e8293e02e5041 1022
+  s_dacc1ec092764c::t_677b23f49bcd5b 315
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7fc618431b73af4721449f553a32b892fc1b855e",
+  "prompts": {},
+  "sessions": {
+    "s_dacc1ec092764c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a763003e-9ba7-4ee5-ad7b-30237aee761e",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
