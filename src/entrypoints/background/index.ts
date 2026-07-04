@@ -78,7 +78,17 @@ import {
   AUTH_REQUIRED_MESSAGE,
   DEFAULT_QUIET_HOURS_START,
   DEFAULT_QUIET_HOURS_END,
+  SUBMISSION_IN_PROGRESS_WINDOW_MS,
+  AUTO_OPEN_DURING_SUBMISSION_KEY,
+  type AutoOpenDuringSubmission,
+  GLOBAL_PAUSE_KEY,
 } from '../../lib/constants';
+import {
+  normalizePauseState,
+  pauseUntilFromDuration,
+  type PauseState,
+  type PauseDuration,
+} from '../../lib/pause';
 import {
   evaluatePrioritySnapshotEvent,
   toFullSnapshotEvent,
@@ -97,6 +107,15 @@ import {
 import { createPriorityState } from './state';
 import { createPriorityActions } from './actions';
 import { createPrioritySettings } from './settings';
+import { loadMuteList, saveMuteList, loadAutoOpenDuringSubmission } from './mutes';
+import {
+  createMuteEntry,
+  addMuteEntry,
+  removeMuteEntry,
+  isStudyMuted,
+  type MuteScope,
+  type MuteDuration,
+} from '../../lib/mutes';
 import { isInQuietHours } from '../../lib/priority-filter';
 import {
   loadTelegramSettings,
@@ -150,6 +169,42 @@ export default defineBackground({
     let authExpiryPauseActive = false;
     let storageCheckInFlight = false;
     let pendingEmergencyPrune = false;
+
+    // Global pause (issue #21). Cached in memory so hot-path guards don't await
+    // storage; loaded on boot and updated by the setPaused handler. `null` means
+    // not paused; a lapsed timed deadline is treated as not paused.
+    //
+    // On MV3 the service worker is torn down and re-woken by events (e.g. the
+    // 1-min alarm) that DON'T call boot(), so the cache must be loaded from any
+    // event-driven entry point too — not just boot — or a paused extension would
+    // resume itself on the first wake. `ensurePauseLoaded()` memoizes that load;
+    // it's kicked off at module init and awaited by every event handler that
+    // could make a request.
+    let pauseStateCache: PauseState | null = null;
+    let pauseLoadPromise: Promise<void> | null = null;
+    // Bumped on every direct cache write (setPaused, auto-resume). An in-flight
+    // load that started before the write must NOT clobber the fresher value when
+    // it resolves — otherwise a resume that cold-wakes the SW gets undone.
+    let pauseCacheVersion = 0;
+    function isPausedNow(): boolean {
+      return pauseStateCache !== null && (pauseStateCache.until === null || pauseStateCache.until > Date.now());
+    }
+    function setPauseCache(next: PauseState | null): void {
+      pauseStateCache = next;
+      pauseCacheVersion += 1;
+    }
+    async function loadPauseStateCache(): Promise<void> {
+      const version = pauseCacheVersion;
+      const data = await browser.storage.local.get(GLOBAL_PAUSE_KEY);
+      if (version !== pauseCacheVersion) return; // a direct write superseded this load
+      pauseStateCache = normalizePauseState(data[GLOBAL_PAUSE_KEY], Date.now());
+    }
+    function ensurePauseLoaded(): Promise<void> {
+      if (!pauseLoadPromise) pauseLoadPromise = loadPauseStateCache();
+      return pauseLoadPromise;
+    }
+    // Start loading immediately on every service-worker wake.
+    void ensurePauseLoaded();
     const refreshHealth = createRefreshHealthTracker({
       persistentThreshold: REFRESH_PERSISTENT_FAILURE_THRESHOLD,
     });
@@ -864,6 +919,12 @@ export default defineBackground({
       rateLimitReloadTimer = setTimeout(async () => {
         rateLimitReloadTimer = null;
         rateLimitCooldownUntilMS = 0;
+        // Don't reload the tab if we were paused during the cooldown (issue #21).
+        await ensurePauseLoaded();
+        if (isPausedNow()) {
+          pushDebugLog('refresh.rate_limit_recovery.skip_paused', {});
+          return;
+        }
         try {
           const tabs = await queryProlificTabs();
           if (tabs.length && typeof tabs[0].id === 'number') {
@@ -1076,6 +1137,10 @@ export default defineBackground({
 
     async function runDelayedRefresh(triggerSource: string, generation: number, runIndex: number, runTotal: number): Promise<void> {
       if (generation !== delayedRefreshGeneration) return;
+      if (isPausedNow()) {
+        pushDebugLog('refresh.delayed.skip_paused', { trigger_source: triggerSource, run_index: runIndex });
+        return;
+      }
       if (isRateLimited()) {
         pushDebugLog('refresh.delayed.skip_rate_limited', { trigger_source: triggerSource, run_index: runIndex });
         return;
@@ -1215,6 +1280,10 @@ export default defineBackground({
 
     function scheduleDelayedRefreshes(triggerSource: string, policy: Record<string, number>): void {
       cancelDelayedRefreshes('reschedule:' + triggerSource);
+      if (isPausedNow()) {
+        pushDebugLog('refresh.delayed.skip_schedule_paused', { trigger_source: triggerSource });
+        return;
+      }
       const currentGen = delayedRefreshGeneration;
       const delays = planDelayedRefreshSchedule(policy);
 
@@ -1359,6 +1428,19 @@ export default defineBackground({
       bumpCounter,
       setState,
       playAudioFn: import.meta.env.CHROME ? playAudioViaOffscreen : undefined,
+      resolveAutoOpenFocusMode: async () => {
+        // Don't steal focus while the user is mid-submission (issue #21).
+        const inProgress = await store.findInProgressSubmission(SUBMISSION_IN_PROGRESS_WINDOW_MS);
+        if (!inProgress) return 'focus';
+        const behavior = await loadAutoOpenDuringSubmission();
+        pushDebugLog('tab.priority_auto_open.submission_in_progress', {
+          behavior,
+          study_id: inProgress.study_id,
+          study_name: inProgress.study_name,
+          status: inProgress.status,
+        });
+        return behavior;
+      },
       limits: {
         minAlertSoundVolume: MIN_PRIORITY_ALERT_SOUND_VOLUME,
         maxAlertSoundVolume: MAX_PRIORITY_ALERT_SOUND_VOLUME,
@@ -1386,8 +1468,15 @@ export default defineBackground({
       if (!candidateStudies.length) {
         return;
       }
+      // Mark seen synchronously *before* the await so a study can't be opened
+      // twice by overlapping evaluations. If the open was suppressed because a
+      // submission is in progress (issue #21), release the mark so the study can
+      // still auto-open once the user finishes.
       priorityStateRuntime.markAutoOpenSeen(candidateStudies);
-      await priorityActionsRuntime.handleAutoOpenAction(filter, candidateStudies, trigger);
+      const suppressed = await priorityActionsRuntime.handleAutoOpenAction(filter, candidateStudies, trigger);
+      if (suppressed) {
+        priorityStateRuntime.clearAutoOpenSeen(candidateStudies);
+      }
     }
 
     async function handlePriorityDesktopNotifyAction(filter: PriorityFilter, matchingStudies: Study[], trigger: string): Promise<void> {
@@ -1444,6 +1533,14 @@ export default defineBackground({
       priorityStateRuntime.setSnapshot(evaluation.nextSnapshot);
       await priorityStateRuntime.persistSnapshot(evaluation.nextSnapshot, evaluation.event.observedAtMS);
 
+      // Global pause (issue #21): keep the known-studies snapshot current (above)
+      // so resuming doesn't flood alerts for studies seen while paused, but run no
+      // alerts, auto-open, telegram, or desktop notifications.
+      if (isPausedNow()) {
+        pushDebugLog('priority.skip_paused', { trigger: evaluation.event.trigger });
+        return;
+      }
+
       if (evaluation.isBaseline) {
         pushDebugLog('tab.priority_auto_open.baseline', {
           trigger: evaluation.event.trigger,
@@ -1459,6 +1556,13 @@ export default defineBackground({
       const telegramSettings = cachedTelegramSettings;
       const tgActive = telegramSettings && isTelegramConfigured(telegramSettings);
 
+      // Manual snooze/block list (issue #21): suppress every notify action
+      // (alert, auto-open, telegram, desktop) for muted studies — matched by
+      // study id or researcher id. Muted studies still appear in the Live list.
+      const muteList = await loadMuteList();
+      const muteNowMS = Date.now();
+      const isMuted = (study: Study): boolean => isStudyMuted(study, muteList, muteNowMS);
+
       // Single pass: build per-study filter map, collect telegram studies,
       // and gather priority action promises.
       const studyFilterMap = new Map<string, PriorityFilter>();
@@ -1466,8 +1570,20 @@ export default defineBackground({
       const tgNotifyStudies: Study[] = [];
       const priorityActionPromises: Promise<void>[] = [];
       for (const { filter } of evaluation.enabledFilters) {
-        const matched = evaluation.matchesByFilterId.get(filter.id);
+        let matched = evaluation.matchesByFilterId.get(filter.id);
         if (!matched?.length) continue;
+        if (muteList.length) {
+          const beforeCount = matched.length;
+          matched = matched.filter((study) => !isMuted(study));
+          if (matched.length < beforeCount) {
+            pushDebugLog('priority.muted.suppressed', {
+              trigger: evaluation.event.trigger,
+              filter: filter.name,
+              suppressed: beforeCount - matched.length,
+            });
+          }
+          if (!matched.length) continue;
+        }
         for (const study of matched) studyFilterMap.set(study.id, filter);
         if (filter.dry_run) {
           pushDebugLog('priority.dry_run', { trigger: evaluation.event.trigger, filter: filter.name, candidate_count: matched.length, study_ids: matched.map(s => s.id) });
@@ -1507,7 +1623,7 @@ export default defineBackground({
         let tgStudies: Study[];
         if (telegramSettings.notify_all_studies) {
           const filterMatchedIDs = new Set(tgNotifyStudies.map((s) => s.id));
-          const nonFilterStudies = evaluation.newlySeenStudies.filter((s) => !filterMatchedIDs.has(s.id));
+          const nonFilterStudies = evaluation.newlySeenStudies.filter((s) => !filterMatchedIDs.has(s.id) && !isMuted(s));
           const dedupedNonFilter = priorityStateRuntime.selectTelegramCandidates(nonFilterStudies);
           tgStudies = [...tgNotifyStudies, ...dedupedNonFilter];
         } else {
@@ -1573,6 +1689,10 @@ export default defineBackground({
     }
 
     async function maybeAutoOpenProlificTab(trigger: string, knownProlificTabs?: Array<{ id?: number; url?: string }>): Promise<boolean> {
+      if (isPausedNow()) {
+        pushDebugLog('tab.auto_open.skip_paused', { trigger });
+        return false;
+      }
       const stored = await browser.storage.local.get([AUTO_OPEN_PROLIFIC_TAB_KEY]);
       const autoOpenEnabled = stored[AUTO_OPEN_PROLIFIC_TAB_KEY] !== false;
 
@@ -1676,6 +1796,17 @@ export default defineBackground({
 
     async function syncTokenOnce(trigger: string): Promise<void> {
       const normalizedTrigger = normalizeSyncTrigger(trigger);
+
+      // Single choke point for the global pause (issue #21): every token-sync
+      // caller (alarm, tab events, boot, OAuth resync, auth-expiry recovery)
+      // funnels through here, so one guard covers them all. Resume paths clear
+      // the cache before calling, so they pass. The SW may have cold-woken for
+      // an event without boot(), so ensure the flag is loaded first.
+      await ensurePauseLoaded();
+      if (isPausedNow()) {
+        pushDebugLog('token.sync.skip_paused', { trigger: normalizedTrigger });
+        return;
+      }
 
       if (syncInProgress) {
         queuePendingTokenSync(normalizedTrigger);
@@ -2126,6 +2257,18 @@ export default defineBackground({
 
       lastInterceptedResponseAtMS = Date.now();
 
+      // While globally paused (issue #21), don't reschedule our own fetches or run
+      // auth/rate-limit recovery (which would reload the tab). The organic response
+      // is still ingested to IndexedDB on the separate capture path.
+      await ensurePauseLoaded();
+      if (isPausedNow()) {
+        await pushDebugLog('studies.request.completed.skip_paused', {
+          url: normalizedURL,
+          status_code: details.statusCode || 0,
+        });
+        return;
+      }
+
       const refreshPolicy = await getStudiesRefreshPolicySettings();
       await bumpCounter('studies_request_completed_count', 1);
       await pushDebugLog('studies.request.completed', {
@@ -2541,6 +2684,40 @@ export default defineBackground({
         });
       }
 
+      if (msg && msg.action === 'setPaused') {
+        return runMessageTask(sendResponse as (response: Record<string, unknown>) => void, async () => {
+          const nowMS = Date.now();
+          let next: PauseState | null = null;
+          if (msg.paused) {
+            const duration: PauseDuration =
+              msg.duration === '1h' || msg.duration === '8h' ? msg.duration : 'forever';
+            next = { until: pauseUntilFromDuration(duration, nowMS) };
+          }
+
+          setPauseCache(next);
+          await storageSetLocal({ [GLOBAL_PAUSE_KEY]: next });
+          await pushDebugLog(next ? 'settings.pause.enabled' : 'settings.pause.resumed', {
+            until: next?.until ?? null,
+          });
+
+          sendResponse({ ok: true, paused: next !== null, until: next?.until ?? null });
+
+          if (next) {
+            // Stop anything already scheduled from firing (delayed refreshes and
+            // a pending rate-limit tab reload).
+            cancelDelayedRefreshes('paused');
+            if (rateLimitReloadTimer) {
+              clearTimeout(rateLimitReloadTimer);
+              rateLimitReloadTimer = null;
+            }
+          } else {
+            // Resume: kick the refresh cycle straight away instead of waiting for
+            // the next alarm tick.
+            await requestTokenSync('settings.pause.resumed');
+          }
+        });
+      }
+
       if (msg && msg.action === 'setPriorityFilters') {
         return runMessageTask(sendResponse as (response: Record<string, unknown>) => void, async () => {
           const filters = normalizePriorityFilters(msg.filters);
@@ -2560,6 +2737,57 @@ export default defineBackground({
           });
 
           sendResponse({ ok: true, filters });
+        });
+      }
+
+      if (msg && msg.action === 'getMutes') {
+        return runMessageTask(sendResponse as (response: Record<string, unknown>) => void, async () => {
+          const mutes = await loadMuteList();
+          sendResponse({ ok: true, mutes });
+        });
+      }
+
+      if (msg && msg.action === 'addMute') {
+        return runMessageTask(sendResponse as (response: Record<string, unknown>) => void, async () => {
+          const scope: MuteScope = msg.scope === 'researcher' ? 'researcher' : 'study';
+          const id = typeof msg.id === 'string' ? msg.id.trim() : '';
+          if (!id) throw new Error('Missing target for mute.');
+          const label = typeof msg.label === 'string' ? msg.label : '';
+          const duration: MuteDuration =
+            msg.duration === '24h' || msg.duration === 'forever' ? msg.duration : '1h';
+
+          const nowMS = Date.now();
+          const current = await loadMuteList(nowMS);
+          const entry = createMuteEntry(scope, id, label, duration, nowMS);
+          const mutes = await saveMuteList(addMuteEntry(current, entry, nowMS), nowMS);
+          await pushDebugLog('settings.mute.added', { scope, id, duration });
+
+          sendResponse({ ok: true, mutes });
+        });
+      }
+
+      if (msg && msg.action === 'removeMute') {
+        return runMessageTask(sendResponse as (response: Record<string, unknown>) => void, async () => {
+          const scope: MuteScope = msg.scope === 'researcher' ? 'researcher' : 'study';
+          const id = typeof msg.id === 'string' ? msg.id.trim() : '';
+          if (!id) throw new Error('Missing target for unmute.');
+
+          const nowMS = Date.now();
+          const current = await loadMuteList(nowMS);
+          const mutes = await saveMuteList(removeMuteEntry(current, scope, id), nowMS);
+          await pushDebugLog('settings.mute.removed', { scope, id });
+
+          sendResponse({ ok: true, mutes });
+        });
+      }
+
+      if (msg && msg.action === 'setAutoOpenDuringSubmission') {
+        return runMessageTask(sendResponse as (response: Record<string, unknown>) => void, async () => {
+          const behavior: AutoOpenDuringSubmission = msg.behavior === 'skip' ? 'skip' : 'background';
+          await storageSetLocal({ [AUTO_OPEN_DURING_SUBMISSION_KEY]: behavior });
+          await pushDebugLog('settings.auto_open_during_submission.updated', { behavior });
+
+          sendResponse({ ok: true, behavior });
         });
       }
 
@@ -2692,7 +2920,18 @@ export default defineBackground({
     browser.alarms.onAlarm.addListener((alarm) => {
       if (alarm.name === 'oidc_sync') {
         pushDebugLog('alarm.fired', { name: alarm.name });
-        requestTokenSync('alarm');
+        // The SW may have cold-woken for this alarm (no boot), so ensure the
+        // pause flag is loaded. requestTokenSync is pause-gated in syncTokenOnce,
+        // so we only need to auto-resume a *lapsed* timed pause here: clear the
+        // stale stored deadline so the cycle restarts cleanly.
+        void ensurePauseLoaded().then(() => {
+          if (pauseStateCache !== null && !isPausedNow()) {
+            setPauseCache(null);
+            void storageSetLocal({ [GLOBAL_PAUSE_KEY]: null });
+            pushDebugLog('settings.pause.auto_resumed', {});
+          }
+          requestTokenSync('alarm');
+        });
       } else if (alarm.name === 'history_prune') {
         // Best-effort maintenance — log failures to diagnostics instead of dying silently.
         void store.pruneStudyHistory().catch((error) => pushDebugLog('history_prune.error', { error: stringifyError(error) }));
@@ -2707,7 +2946,7 @@ export default defineBackground({
       }
       if (tab.url.includes('app.prolific.com') || tab.url.includes('auth.prolific.com')) {
         pushDebugLog('tab.updated.prolific', { tab_id: tabId });
-        requestTokenSync('tabs.onUpdated');
+        requestTokenSync('tabs.onUpdated'); // syncTokenOnce is pause-gated
       }
     });
 
@@ -2716,7 +2955,7 @@ export default defineBackground({
         lastAutoOpenedTabId = null;
       }
       pushDebugLog('tab.removed', { tab_id: tabId });
-      requestTokenSync('tabs.onRemoved');
+      requestTokenSync('tabs.onRemoved'); // syncTokenOnce is pause-gated
     });
 
     // ─────────────────────────────────────────────────────────────
@@ -2729,6 +2968,9 @@ export default defineBackground({
       }
       await migrateLegacyPriorityFilter();
       await priorityStateRuntime.ensureHydrated();
+      // Load the pause flag before anything schedules or fetches, so a paused
+      // extension stays quiet across a service-worker restart (issue #21).
+      await ensurePauseLoaded();
 
       try {
         const tgSettings = await refreshTelegramSettingsCache();
@@ -2749,7 +2991,7 @@ export default defineBackground({
       try {
         const existing = await browser.storage.local.get(STATE_KEY);
         const state = (existing[STATE_KEY] as Record<string, unknown>) || {};
-        if (state.token_ok) {
+        if (state.token_ok && !isPausedNow()) {
           const tabs = await queryProlificTabs();
           const tabId = tabs[0]?.id;
           if (typeof tabId === 'number') {

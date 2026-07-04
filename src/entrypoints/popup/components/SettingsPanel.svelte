@@ -44,11 +44,21 @@
     SOUND_TYPE_NONE,
     TELEGRAM_SETTINGS_PERSIST_DEBOUNCE_MS,
     TELEGRAM_VERIFY_DEBOUNCE_MS,
+    type AutoOpenDuringSubmission,
   } from '../../../lib/constants';
+  import type { MuteEntry, MuteScope } from '../../../lib/mutes';
+  import type { PauseDuration } from '../../../lib/pause';
 
   let {
     active,
     autoOpenEnabled,
+    autoOpenDuringSubmission,
+    mutes = [],
+    nowMS = Date.now(),
+    paused = false,
+    pauseRemaining = '',
+    onPause,
+    onResume,
     priorityFilters = $bindable(),
     liveStudies,
     telegramSettings,
@@ -61,6 +71,8 @@
     researcherProfiles,
     focusFilterId,
     onAutoOpenChange,
+    onAutoOpenDuringSubmissionChange,
+    onRemoveMute,
     onPriorityFiltersChange,
     onTelegramSettingsChange,
     onTelegramTest,
@@ -73,6 +85,14 @@
   } = $props<{
     active: boolean;
     autoOpenEnabled: boolean;
+    autoOpenDuringSubmission: AutoOpenDuringSubmission;
+    mutes?: MuteEntry[];
+    /** Shared coarse clock (ms) from App so snooze-list expiry ticks without a per-panel timer. */
+    nowMS?: number;
+    paused?: boolean;
+    pauseRemaining?: string;
+    onPause?: (duration: PauseDuration) => void;
+    onResume?: () => void;
     priorityFilters: PriorityFilter[];
     liveStudies: Study[];
     telegramSettings: TelegramSettings;
@@ -85,6 +105,8 @@
     researcherProfiles: Map<string, ResearcherProfile>;
     focusFilterId: string;
     onAutoOpenChange: (enabled: boolean) => void;
+    onAutoOpenDuringSubmissionChange: (behavior: AutoOpenDuringSubmission) => void;
+    onRemoveMute: (scope: MuteScope, id: string) => void;
     onPriorityFiltersChange: () => void;
     onTelegramSettingsChange: (settings: TelegramSettings) => void;
     onTelegramTest: (settings: TelegramSettings) => Promise<{ ok: boolean; error?: string; description?: string }>;
@@ -763,10 +785,67 @@
     source.start(startTime);
   }
 
+  // --- Snoozed & blocked studies (issue #21) ---
+  // Uses the shared `nowMS` clock from App so expiry labels count down.
+  const sortedMutes = $derived(
+    [...mutes].sort((a: MuteEntry, b: MuteEntry) => b.created_at - a.created_at),
+  );
+
+  function muteExpiryLabel(entry: MuteEntry): string {
+    if (entry.until === null) return 'Blocked';
+    const remaining = entry.until - nowMS;
+    if (remaining <= 0) return 'expiring…';
+    const minutes = Math.round(remaining / 60000);
+    if (minutes < 60) return `${Math.max(1, minutes)}m left`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 48) return `${hours}h left`;
+    return `${Math.round(hours / 24)}d left`;
+  }
+
 </script>
 
 <div id="panelSettings" class="panel" class:active role="tabpanel" aria-labelledby="tabSettings">
   <div class="settings min-h-[420px] max-h-[420px] scroll-container pb-1">
+    <!-- Global pause card -->
+    <div
+      class="setting-card shadow-sm border rounded-lg p-4 mb-2.5 {paused ? 'bg-warning/10 border-warning/40' : 'bg-base-100 border-base-300'}"
+      id="pauseCard"
+    >
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="text-sm font-semibold text-base-content">
+            {paused ? 'Paused' : 'Pause everything'}
+          </div>
+          <div class="text-xs text-base-content/50 mt-0.5 leading-snug">
+            {#if paused}
+              Not refreshing, alerting, or opening anything{pauseRemaining ? ` — resumes in ${pauseRemaining}` : ''}.
+            {:else}
+              Temporarily stop refreshing, filters, alerts, and auto-open.
+            {/if}
+          </div>
+        </div>
+        {#if paused}
+          <button
+            id="settingsResumeButton"
+            type="button"
+            class="btn btn-sm btn-warning flex-none gap-1"
+            onclick={() => onResume?.()}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            Resume
+          </button>
+        {/if}
+      </div>
+      {#if !paused}
+        <div class="mt-3 flex items-center gap-1.5 flex-wrap">
+          <span class="text-[11px] text-base-content/55 mr-1">Pause for</span>
+          <button type="button" class="btn btn-xs" onclick={() => onPause?.('1h')}>1 hour</button>
+          <button type="button" class="btn btn-xs" onclick={() => onPause?.('8h')}>8 hours</button>
+          <button type="button" class="btn btn-xs" onclick={() => onPause?.('forever')}>Until I resume</button>
+        </div>
+      {/if}
+    </div>
+
     <!-- Auto-open card -->
     <div class="setting-card bg-base-100 shadow-sm border border-base-300 rounded-lg p-4 flex items-center justify-between gap-3 mb-2.5">
       <div>
@@ -781,6 +860,74 @@
         aria-label="Auto-open Prolific tab"
         onchange={(e) => onAutoOpenChange((e.target as HTMLInputElement).checked)}
       />
+    </div>
+
+    <!-- Auto-open while completing a study -->
+    <div class="setting-card bg-base-100 shadow-sm border border-base-300 rounded-lg p-4 mb-2.5" id="autoOpenDuringSubmissionCard">
+      <div class="text-sm font-semibold text-base-content">While you're completing a study</div>
+      <div class="text-xs text-base-content/50 mt-0.5 leading-snug mb-2.5">
+        Auto-open never steals your screen while you have a study in progress. Choose what it does with matching new studies until you finish.
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label class="flex items-start gap-2 cursor-pointer">
+          <input
+            type="radio"
+            name="autoOpenDuringSubmission"
+            class="radio radio-primary radio-sm mt-0.5"
+            value="background"
+            checked={autoOpenDuringSubmission === 'background'}
+            onchange={() => onAutoOpenDuringSubmissionChange('background')}
+          />
+          <span class="text-xs">
+            <span class="font-medium text-base-content">Open quietly in a background tab</span>
+            <span class="block text-base-content/50">New matches open behind your study — nothing grabs focus.</span>
+          </span>
+        </label>
+        <label class="flex items-start gap-2 cursor-pointer">
+          <input
+            type="radio"
+            name="autoOpenDuringSubmission"
+            class="radio radio-primary radio-sm mt-0.5"
+            value="skip"
+            checked={autoOpenDuringSubmission === 'skip'}
+            onchange={() => onAutoOpenDuringSubmissionChange('skip')}
+          />
+          <span class="text-xs">
+            <span class="font-medium text-base-content">Don't open anything</span>
+            <span class="block text-base-content/50">Skip auto-open until you finish. Alerts and Telegram still work.</span>
+          </span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Snoozed & blocked -->
+    <div class="setting-card bg-base-100 shadow-sm border border-base-300 rounded-lg p-4 mb-2.5" id="mutesCard">
+      <div class="text-sm font-semibold text-base-content">Snoozed &amp; blocked</div>
+      <div class="text-xs text-base-content/50 mt-0.5 leading-snug mb-2.5">
+        Studies and researchers you muted from the actions menu on the Live tab. They still show up, but make no sound and won't auto-open.
+      </div>
+      {#if sortedMutes.length === 0}
+        <div class="text-xs text-base-content/40 italic">Nothing muted right now.</div>
+      {:else}
+        <div class="flex flex-col gap-1.5" id="mutesList">
+          {#each sortedMutes as m (m.scope + ':' + m.id)}
+            <div class="flex items-center gap-2 text-xs bg-base-200/50 rounded px-2.5 py-1.5">
+              <span class="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-[1px] rounded flex-shrink-0 {m.scope === 'researcher' ? 'bg-info/20 text-info' : 'bg-base-300 text-base-content/60'}">
+                {m.scope === 'researcher' ? 'Researcher' : 'Study'}
+              </span>
+              <span class="truncate text-base-content/80 flex-1" title={m.label || m.id}>{m.label || m.id}</span>
+              <span class="text-[10.5px] whitespace-nowrap flex-shrink-0 {m.until === null ? 'text-error/70 font-medium' : 'text-base-content/45'}">{muteExpiryLabel(m)}</span>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs px-1.5 h-5 min-h-0 text-[11px] text-base-content/55 hover:text-error flex-shrink-0"
+                onclick={() => onRemoveMute(m.scope, m.id)}
+                title="Un-mute {m.label || m.id}"
+                aria-label="Un-mute {m.label || m.id}"
+              >&#10005;</button>
+            </div>
+          {/each}
+        </div>
+      {/if}
     </div>
 
     <!-- Earnings card -->

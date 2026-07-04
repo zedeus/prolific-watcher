@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Study, PriorityFilter, TelegramSettings, FilterListField } from '../../../lib/types';
+  import type { MuteDuration } from '../../../lib/mutes';
 
   interface Props {
     study: Study;
@@ -12,6 +13,12 @@
     onCopyLink: () => void;
     onSendTelegram: () => void;
     onViewProfile?: (researcherId: string, researcherName: string) => void;
+    onMuteStudy?: (duration: MuteDuration) => void;
+    onMuteResearcher?: (duration: MuteDuration) => void;
+    onUnmuteStudy?: () => void;
+    onUnmuteResearcher?: () => void;
+    studyMuted?: boolean;
+    researcherMuted?: boolean;
   }
 
   let {
@@ -24,9 +31,21 @@
     onCopyLink,
     onSendTelegram,
     onViewProfile,
+    onMuteStudy,
+    onMuteResearcher,
+    onUnmuteStudy,
+    onUnmuteResearcher,
+    studyMuted = false,
+    researcherMuted = false,
   }: Props = $props();
 
-  type SubmenuKind = FilterListField | null;
+  type SubmenuKind = FilterListField | 'mute-study' | 'mute-researcher' | null;
+
+  const MUTE_DURATIONS: { value: MuteDuration; label: string }[] = [
+    { value: '1h', label: 'for 1 hour' },
+    { value: '24h', label: 'for 24 hours' },
+    { value: 'forever', label: 'until I un-mute' },
+  ];
 
   const MENU_WIDTH = 224; // 14rem
   const MENU_ESTIMATED_HEIGHT = 170;
@@ -71,7 +90,10 @@
     const openLeft = rect.left >= SUBMENU_WIDTH + GAP + 8;
     const left = openLeft ? rect.left - SUBMENU_WIDTH - GAP : rect.right + GAP;
     // Pin submenu top to the menu top, but clamp so the submenu doesn't fall below the viewport.
-    const estimatedSubmenuHeight = 40 + Math.min(priorityFilters.length, 6) * 32;
+    const itemCount = submenu === 'match' || submenu === 'ignore'
+      ? Math.min(priorityFilters.length, 6) + 1
+      : MUTE_DURATIONS.length;
+    const estimatedSubmenuHeight = 40 + itemCount * 32;
     const top = Math.min(rect.top, Math.max(8, viewportH - estimatedSubmenuHeight - 8));
     return { left, top };
   }
@@ -91,10 +113,13 @@
     open = true;
   }
 
-  function showSubmenu(e: MouseEvent, kind: FilterListField) {
+  function showSubmenu(e: MouseEvent, kind: SubmenuKind) {
     e.preventDefault();
     e.stopPropagation();
-    if (!hasResearcher) return;
+    if (!kind) return;
+    // Researcher-scoped actions need a researcher; muting a study does not.
+    const researcherScoped = kind === 'match' || kind === 'ignore' || kind === 'mute-researcher';
+    if (researcherScoped && !hasResearcher) return;
     if (submenu === kind) { submenu = null; submenuPos = null; return; }
     submenu = kind;
     // Wait for the submenu to mount so computeSubmenuPos can measure its rect.
@@ -104,7 +129,7 @@
   function handleAddToFilter(e: MouseEvent, filterId: string) {
     e.preventDefault();
     e.stopPropagation();
-    if (!submenu) return;
+    if (submenu !== 'match' && submenu !== 'ignore') return;
     onAddToFilter(filterId, submenu);
     close();
   }
@@ -112,8 +137,30 @@
   function handleAddToNewFilter(e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    if (!submenu) return;
+    if (submenu !== 'match' && submenu !== 'ignore') return;
     onAddToNewFilter(submenu);
+    close();
+  }
+
+  function handleMute(e: MouseEvent, duration: MuteDuration) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (submenu === 'mute-study') onMuteStudy?.(duration);
+    else if (submenu === 'mute-researcher') onMuteResearcher?.(duration);
+    close();
+  }
+
+  function handleUnmuteStudy(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    onUnmuteStudy?.();
+    close();
+  }
+
+  function handleUnmuteResearcher(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    onUnmuteResearcher?.();
     close();
   }
 
@@ -247,6 +294,50 @@
 
     <div class="border-t border-base-300 my-0.5"></div>
 
+    {#if studyMuted}
+      <button
+        type="button"
+        class="menu-item w-full text-left px-3 py-1.5 text-[12px] hover:bg-base-200 text-base-content bg-transparent border-none cursor-pointer flex items-center gap-2"
+        onclick={handleUnmuteStudy}
+        title="Show alerts for this study again"
+      >
+        <span class="truncate">&#128276; Un-mute this study</span>
+      </button>
+    {:else}
+      <button
+        type="button"
+        class="menu-item w-full text-left px-3 py-1.5 text-[12px] hover:bg-base-200 text-base-content bg-transparent border-none cursor-pointer flex items-center justify-between gap-2"
+        onclick={(e) => showSubmenu(e, 'mute-study')}
+        title="Silence alerts &amp; auto-open for this study"
+      >
+        <span class="truncate">&#128277; Mute this study</span>
+        <span class="text-[10px] text-base-content/40">&#9656;</span>
+      </button>
+    {/if}
+    {#if researcherMuted}
+      <button
+        type="button"
+        class="menu-item w-full text-left px-3 py-1.5 text-[12px] hover:bg-base-200 text-base-content bg-transparent border-none cursor-pointer flex items-center gap-2"
+        onclick={handleUnmuteResearcher}
+        title="Show alerts from this researcher again"
+      >
+        <span class="truncate">&#128276; Un-mute this researcher</span>
+      </button>
+    {:else}
+      <button
+        type="button"
+        class="menu-item w-full text-left px-3 py-1.5 text-[12px] hover:bg-base-200 flex items-center justify-between gap-2 bg-transparent border-none cursor-pointer {hasResearcher ? 'text-base-content' : 'text-base-content/30 cursor-not-allowed'}"
+        disabled={!hasResearcher}
+        onclick={(e) => showSubmenu(e, 'mute-researcher')}
+        title={hasResearcher ? 'Silence every study from this researcher' : 'No researcher on this study'}
+      >
+        <span class="truncate">&#128277; Mute this researcher</span>
+        <span class="text-[10px] text-base-content/40">&#9656;</span>
+      </button>
+    {/if}
+
+    <div class="border-t border-base-300 my-0.5"></div>
+
     <button
       type="button"
       class="menu-item w-full text-left px-3 py-1.5 text-[12px] hover:bg-base-200 text-base-content bg-transparent border-none cursor-pointer flex items-center justify-between gap-2"
@@ -278,30 +369,48 @@
       style="left: {submenuPos.left}px; top: {submenuPos.top}px;"
     >
       <div class="px-3 pt-1.5 pb-1 text-[10px] uppercase tracking-wider text-base-content/45 font-semibold">
-        {submenu === 'match' ? 'Prioritize in…' : 'Blacklist in…'}
+        {submenu === 'match'
+          ? 'Prioritize in…'
+          : submenu === 'ignore'
+            ? 'Blacklist in…'
+            : submenu === 'mute-study'
+              ? 'Mute this study…'
+              : 'Mute this researcher…'}
       </div>
-      {#if priorityFilters.length === 0}
-        <div class="px-3 pb-2 text-[11px] text-base-content/50">No filters yet.</div>
-      {:else}
-        {#each priorityFilters as f (f.id)}
+      {#if submenu === 'mute-study' || submenu === 'mute-researcher'}
+        {#each MUTE_DURATIONS as d (d.value)}
           <button
             type="button"
-            class="submenu-item w-full text-left px-3 py-1.5 text-[12px] hover:bg-base-200 text-base-content bg-transparent border-none cursor-pointer flex items-center justify-between gap-2"
-            onclick={(e) => handleAddToFilter(e, f.id)}
+            class="submenu-item w-full text-left px-3 py-1.5 text-[12px] hover:bg-base-200 text-base-content bg-transparent border-none cursor-pointer flex items-center gap-2"
+            onclick={(e) => handleMute(e, d.value)}
           >
-            <span class="truncate">{f.name || 'Filter'}</span>
-            {#if !f.enabled}
-              <span class="text-[9px] text-base-content/40">off</span>
-            {/if}
+            <span class="truncate">{d.label}</span>
           </button>
         {/each}
+      {:else}
+        {#if priorityFilters.length === 0}
+          <div class="px-3 pb-2 text-[11px] text-base-content/50">No filters yet.</div>
+        {:else}
+          {#each priorityFilters as f (f.id)}
+            <button
+              type="button"
+              class="submenu-item w-full text-left px-3 py-1.5 text-[12px] hover:bg-base-200 text-base-content bg-transparent border-none cursor-pointer flex items-center justify-between gap-2"
+              onclick={(e) => handleAddToFilter(e, f.id)}
+            >
+              <span class="truncate">{f.name || 'Filter'}</span>
+              {#if !f.enabled}
+                <span class="text-[9px] text-base-content/40">off</span>
+              {/if}
+            </button>
+          {/each}
+        {/if}
+        <div class="border-t border-base-300 my-0.5"></div>
+        <button
+          type="button"
+          class="submenu-item w-full text-left px-3 py-1.5 text-[12px] hover:bg-primary/10 text-primary font-medium bg-transparent border-none cursor-pointer"
+          onclick={handleAddToNewFilter}
+        >+ New filter…</button>
       {/if}
-      <div class="border-t border-base-300 my-0.5"></div>
-      <button
-        type="button"
-        class="submenu-item w-full text-left px-3 py-1.5 text-[12px] hover:bg-primary/10 text-primary font-medium bg-transparent border-none cursor-pointer"
-        onclick={handleAddToNewFilter}
-      >+ New filter…</button>
     </div>
   {/if}
 {/if}

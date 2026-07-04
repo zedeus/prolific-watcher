@@ -77,6 +77,26 @@ export const MAX_PRIORITY_ACTION_SEEN_STUDIES = 1000;
 export const PRIORITY_ALERT_COOLDOWN_MS = 7000;
 export const TELEGRAM_NOTIFY_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
 
+// Auto-open should not steal focus while the user is mid-submission (issue #21).
+// A submission counts as "in progress" only if a `submitting` (RESERVED/ACTIVE)
+// row was observed within this window — so a reservation that was abandoned
+// without the extension seeing the transition stops suppressing after it lapses.
+// Normal completion flips the phase to `submitted`, which clears suppression
+// immediately regardless of this window.
+export const SUBMISSION_IN_PROGRESS_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+// What auto-open does while a submission is in progress.
+export const AUTO_OPEN_DURING_SUBMISSION_KEY = 'autoOpenDuringSubmission';
+export type AutoOpenDuringSubmission = 'background' | 'skip';
+export const DEFAULT_AUTO_OPEN_DURING_SUBMISSION: AutoOpenDuringSubmission = 'background';
+
+// Manual snooze / block list (issue #21).
+export const MUTE_LIST_KEY = 'muteList';
+export const MAX_MUTE_ENTRIES = 500;
+
+// Global pause (issue #21): one switch that stops the periodic refresh/requests,
+// all auto-open, and all filter evaluation until resumed (or a timer lapses).
+export const GLOBAL_PAUSE_KEY = 'globalPause';
+
 export const SOUND_TYPE_NONE = 'none';
 export const DEFAULT_PRIORITY_ALERT_SOUND_TYPE = 'pay';
 export const DEFAULT_PRIORITY_ALERT_SOUND_VOLUME = 100;

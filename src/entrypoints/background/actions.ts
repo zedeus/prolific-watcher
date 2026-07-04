@@ -16,6 +16,14 @@ export interface PriorityActionsLimits {
   defaultAlertSoundVolume: number;
 }
 
+/**
+ * How auto-open should behave for this batch:
+ * - `focus`      — normal: focus the first opened tab (no submission in progress)
+ * - `background` — open tabs without stealing focus (`active: false`)
+ * - `skip`       — don't open any tabs
+ */
+export type AutoOpenFocusMode = 'focus' | 'background' | 'skip';
+
 export interface CreatePriorityActionsOptions {
   nowIso: () => string;
   queryProlificTabs: () => Promise<Array<{ url?: string }>>;
@@ -24,11 +32,20 @@ export interface CreatePriorityActionsOptions {
   setState: (partial: Record<string, unknown>) => Promise<void>;
   limits: PriorityActionsLimits;
   playAudioFn?: ((soundType: string, volume: number) => Promise<void>) | null;
+  // Resolves how auto-open should behave right now — used to avoid stealing focus
+  // while the user is mid-submission (issue #21). Defaults to `focus`.
+  resolveAutoOpenFocusMode?: () => Promise<AutoOpenFocusMode>;
 }
 
 export interface PriorityActions {
   handleAlertAction: (filter: PriorityFilter, candidateStudies: Study[], trigger: string) => Promise<void>;
-  handleAutoOpenAction: (filter: PriorityFilter, candidateStudies: Study[], trigger: string) => Promise<void>;
+  /**
+   * Returns `true` when the batch was suppressed because a submission is in
+   * progress (focus mode `skip`) and nothing was opened — the caller should NOT
+   * mark these studies as auto-open-seen, so the opportunity survives once the
+   * submission finishes. Returns `false` otherwise (opened, disabled, or no-op).
+   */
+  handleAutoOpenAction: (filter: PriorityFilter, candidateStudies: Study[], trigger: string) => Promise<boolean>;
   handleDesktopNotifyAction: (filter: PriorityFilter, candidateStudies: Study[], trigger: string) => Promise<void>;
 }
 
@@ -41,6 +58,7 @@ export function createPriorityActions(options: CreatePriorityActionsOptions): Pr
     setState,
     limits,
     playAudioFn,
+    resolveAutoOpenFocusMode,
   } = options;
 
   let priorityAlertAudioContext: AudioContext | null = null;
@@ -212,17 +230,42 @@ export function createPriorityActions(options: CreatePriorityActionsOptions): Pr
     );
   }
 
-  async function handleAutoOpenAction(filter: PriorityFilter, candidateStudies: Study[], trigger: string): Promise<void> {
+  async function handleAutoOpenAction(filter: PriorityFilter, candidateStudies: Study[], trigger: string): Promise<boolean> {
     if (!candidateStudies.length) {
-      return;
+      return false;
     }
     if (filter.auto_open_in_new_tab === false) {
       pushDebugLog('tab.priority_auto_open.disabled_new_tab', {
         trigger,
         candidate_count: candidateStudies.length,
       });
-      return;
+      return false;
     }
+
+    // Don't steal focus while the user is mid-submission (issue #21). A failure
+    // here (e.g. the DB read throwing) must not break auto-open — fall back to
+    // normal focus behavior.
+    let focusMode: AutoOpenFocusMode = 'focus';
+    if (resolveAutoOpenFocusMode) {
+      try {
+        focusMode = await resolveAutoOpenFocusMode();
+      } catch (error) {
+        pushDebugLog('tab.priority_auto_open.focus_mode_error', {
+          trigger,
+          error: String(error && (error as Error).message ? (error as Error).message : error),
+        });
+      }
+    }
+    if (focusMode === 'skip') {
+      pushDebugLog('tab.priority_auto_open.skipped_submission_in_progress', {
+        trigger,
+        candidate_count: candidateStudies.length,
+      });
+      // Suppressed by an in-progress submission — signal the caller not to mark
+      // these studies seen, so they can still auto-open once the user finishes.
+      return true;
+    }
+    const openInBackground = focusMode === 'background';
 
     const prolificTabs = await queryProlificTabs();
     const alreadyOpenStudyIDs = new Set<string>();
@@ -251,7 +294,8 @@ export function createPriorityActions(options: CreatePriorityActionsOptions): Pr
 
       await browser.tabs.create({
         url: studyURL,
-        active: openedCount === 0,
+        // Focus the first tab normally, but never steal focus mid-submission.
+        active: openInBackground ? false : openedCount === 0,
       });
 
       alreadyOpenStudyIDs.add(studyID);
@@ -268,7 +312,7 @@ export function createPriorityActions(options: CreatePriorityActionsOptions): Pr
         trigger,
         candidate_count: candidateStudies.length,
       });
-      return;
+      return false;
     }
 
     await bumpCounter('priority_study_auto_open_count', openedCount);
@@ -277,6 +321,7 @@ export function createPriorityActions(options: CreatePriorityActionsOptions): Pr
       priority_study_auto_open_last_trigger: trigger,
       priority_study_auto_open_last_count: openedCount,
     });
+    return false;
   }
 
   async function handleDesktopNotifyAction(filter: PriorityFilter, candidateStudies: Study[], trigger: string): Promise<void> {

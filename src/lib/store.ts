@@ -593,6 +593,38 @@ export async function upsertSubmission(snapshot: SubmissionSnapshot, observedAt:
 }
 
 /**
+ * Find the most-recently-observed in-progress (RESERVED/ACTIVE) submission, if
+ * any was observed within `freshnessWindowMS`. Used so auto-open doesn't steal
+ * focus while the user is mid-submission (issue #21). Returns null when there is
+ * no fresh in-progress submission — including a stale/abandoned reservation
+ * whose last observation predates the window.
+ */
+export async function findInProgressSubmission(
+  freshnessWindowMS: number,
+  nowMS: number = Date.now(),
+): Promise<SubmissionRecord | null> {
+  const rows = await db.submissions.where('phase').equals('submitting').toArray();
+  if (rows.length === 0) return null;
+
+  const cutoff = nowMS - freshnessWindowMS;
+  let best: SubmissionRecord | null = null;
+  let bestFreshness = -Infinity;
+  for (const row of rows) {
+    // `observed_at` is when we last actually saw this submission. `updated_at` is
+    // rewritten to "now" on every upsert, so it can't tell a fresh observation
+    // from a stale one — fall back to it only if `observed_at` is unparseable.
+    const observedMS = Date.parse(row.observed_at);
+    const freshness = Number.isFinite(observedMS) ? observedMS : Date.parse(row.updated_at);
+    if (!Number.isFinite(freshness) || freshness < cutoff) continue;
+    if (freshness > bestFreshness) {
+      bestFreshness = freshness;
+      best = row;
+    }
+  }
+  return best;
+}
+
+/**
  * Return every submitted submission for analytics. No limit; caller should
  * tolerate large arrays (thousands).
  */

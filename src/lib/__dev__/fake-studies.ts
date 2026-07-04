@@ -2,7 +2,8 @@ import type { Study, Money } from '../types';
 import type { StudyLatestRecord, StudyActiveSnapshotRecord, ResearcherRecord, StudyAvailabilityEventRecord, StudyHistoryRecord } from '../db';
 import { db } from '../db';
 import { makeRng, pick } from './rng';
-import { STATE_KEY } from '../constants';
+import { STATE_KEY, MUTE_LIST_KEY } from '../constants';
+import { createMuteEntry, type MuteEntry } from '../mutes';
 
 function gaussian(rng: () => number, mean: number, sd: number): number {
   const u1 = Math.max(1e-9, rng());
@@ -441,6 +442,48 @@ export async function wipeStudyData(): Promise<void> {
       await db.observationLog.clear();
     },
   );
+}
+
+/**
+ * Dev/test only: mute a couple of the currently-seeded studies plus one researcher, so the
+ * "muted" badge in Live and the "Snoozed & blocked" list in Settings can be reviewed without
+ * clicking through the menu. Seeds a 1h snooze, a permanent block, and a 24h researcher snooze.
+ * No-op outside a browser. Returns the number of mute entries written.
+ */
+export async function seedMutes(): Promise<number> {
+  const storage = resolveLocalStorage();
+  if (!storage) return 0;
+
+  // Mute the newest studies so the "muted" badge lands at the top of the Live
+  // list (which sorts newest-first), not below the fold.
+  const all = await db.studiesLatest.toArray();
+  all.sort((a, b) => {
+    const at = String((a.payload as unknown as Study | undefined)?.first_seen_at || a.last_seen_at || '');
+    const bt = String((b.payload as unknown as Study | undefined)?.first_seen_at || b.last_seen_at || '');
+    return bt.localeCompare(at);
+  });
+
+  const now = Date.now();
+  const entries: MuteEntry[] = [];
+
+  if (all[0]) entries.push(createMuteEntry('study', all[0].study_id, all[0].name, '1h', now));
+  if (all[1]) entries.push(createMuteEntry('study', all[1].study_id, all[1].name, 'forever', now - 1000));
+
+  // Mute the researcher of a *different* top study so its badge is visible too.
+  const researcherStudy = all.slice(2).find((s) => Boolean((s.payload as unknown as Study | undefined)?.researcher?.id))
+    ?? all.find((s) => Boolean((s.payload as unknown as Study | undefined)?.researcher?.id));
+  if (researcherStudy) {
+    const r = (researcherStudy.payload as unknown as Study).researcher;
+    entries.push(createMuteEntry('researcher', r.id, r.name, '24h', now - 2000));
+  }
+
+  await storage.set({ [MUTE_LIST_KEY]: entries });
+  return entries.length;
+}
+
+export async function clearMutes(): Promise<void> {
+  const storage = resolveLocalStorage();
+  if (storage) await storage.set({ [MUTE_LIST_KEY]: [] });
 }
 
 export async function clearFakeStudies(): Promise<void> {

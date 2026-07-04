@@ -42,9 +42,16 @@
     DASHBOARD_DEFAULT_EVENTS_LIMIT,
     DASHBOARD_DEFAULT_SUBMISSIONS_LIMIT,
     DEFAULT_TELEGRAM_SETTINGS,
+    MUTE_LIST_KEY,
+    AUTO_OPEN_DURING_SUBMISSION_KEY,
+    DEFAULT_AUTO_OPEN_DURING_SUBMISSION,
+    type AutoOpenDuringSubmission,
+    GLOBAL_PAUSE_KEY,
   } from '../../lib/constants';
   import * as store from '../../lib/store';
   import { createDefaultPriorityFilter } from '../../lib/priority-filter';
+  import { normalizeMuteList, type MuteEntry, type MuteScope, type MuteDuration } from '../../lib/mutes';
+  import { normalizePauseState, pauseRemainingLabel, type PauseState, type PauseDuration } from '../../lib/pause';
   import {
     parseDate,
     formatRelative,
@@ -92,9 +99,25 @@
   let errorMessage = $state('');
   let isAuthRequired = $state(false);
   let autoOpenEnabled = $state(true);
+  let autoOpenDuringSubmission: AutoOpenDuringSubmission = $state(DEFAULT_AUTO_OPEN_DURING_SUBMISSION);
   let settingsLoaded = $state(false);
 
   let priorityFilters: PriorityFilter[] = $state([]);
+  let mutes: MuteEntry[] = $state([]);
+  // Bumped whenever a mute add/remove response is applied; used to detect a
+  // concurrent mute write and skip a stale dashboard-sourced overwrite.
+  let muteGeneration = 0;
+
+  // Global pause (issue #21). `pauseState` null = not paused.
+  let pauseState = $state<PauseState | null>(null);
+  let pauseGeneration = 0;
+  // One coarse 30s clock for the whole popup, shared with the panels (mute-badge
+  // and snooze-list expiry) so they don't each run their own interval.
+  let nowMS = $state(Date.now());
+  const isPaused = $derived(
+    pauseState !== null && (pauseState.until === null || pauseState.until > nowMS),
+  );
+  const pauseRemaining = $derived(pauseRemainingLabel(pauseState, nowMS));
   let telegramSettings: TelegramSettings = $state(cloneTelegramSettings(DEFAULT_TELEGRAM_SETTINGS));
   let allSubmissions: SubmissionRecord[] = $state([]);
   let earningsPrefs: EarningsPrefs = $state({ ...DEFAULT_EARNINGS_PREFS, fx_rates: {}, fx_rates_cache: {} });
@@ -295,6 +318,102 @@
     await sendRuntimeMessage('setAutoOpen', { enabled });
   }
 
+  // Mute list (issue #21). Reads come straight from storage (fast, prunes
+  // expired entries); writes go through the background and return the fresh list.
+  async function loadMutes(): Promise<MuteEntry[]> {
+    const data = await browser.storage.local.get(MUTE_LIST_KEY);
+    return normalizeMuteList(data[MUTE_LIST_KEY], Date.now());
+  }
+
+  function applyMuteResponse(response: RuntimeMessageResponse) {
+    if (Array.isArray(response.mutes)) {
+      mutes = normalizeMuteList(response.mutes, Date.now());
+      // Mark that an authoritative mute write landed, so an in-flight dashboard
+      // refresh (which read storage before the write committed) doesn't clobber
+      // this fresher value with a stale list.
+      muteGeneration += 1;
+    }
+  }
+
+  async function addMute(scope: MuteScope, id: string, label: string, duration: MuteDuration) {
+    if (!id) return;
+    try {
+      applyMuteResponse(await sendRuntimeMessage('addMute', { scope, id, label, duration }));
+    } catch (err) {
+      errorMessage = toUserErrorMessage(err);
+    }
+  }
+
+  async function removeMute(scope: MuteScope, id: string) {
+    if (!id) return;
+    try {
+      applyMuteResponse(await sendRuntimeMessage('removeMute', { scope, id }));
+    } catch (err) {
+      errorMessage = toUserErrorMessage(err);
+    }
+  }
+
+  function muteStudy(study: Study, duration: MuteDuration) {
+    addMute('study', study?.id?.trim() ?? '', study?.name?.trim() || 'this study', duration);
+  }
+  function muteResearcher(study: Study, duration: MuteDuration) {
+    const id = study?.researcher?.id?.trim() ?? '';
+    const label = study?.researcher?.name?.trim() || id;
+    addMute('researcher', id, label, duration);
+  }
+  function unmuteStudy(study: Study) {
+    removeMute('study', study?.id?.trim() ?? '');
+  }
+  function unmuteResearcher(study: Study) {
+    removeMute('researcher', study?.researcher?.id?.trim() ?? '');
+  }
+
+  // Global pause (issue #21). Reads come from storage (with lapse-pruning);
+  // writes go through the background, which also stops/kicks the refresh cycle.
+  async function loadPauseState(): Promise<PauseState | null> {
+    const data = await browser.storage.local.get(GLOBAL_PAUSE_KEY);
+    return normalizePauseState(data[GLOBAL_PAUSE_KEY], Date.now());
+  }
+  async function handlePause(duration: PauseDuration) {
+    const gen = (pauseGeneration += 1);
+    try {
+      const response = await sendRuntimeMessage('setPaused', { paused: true, duration });
+      // Only apply if no newer pause/resume happened while this was in flight,
+      // so rapid duration clicks don't land out of order.
+      if (gen === pauseGeneration) {
+        pauseState = { until: (response.until as number | null) ?? null };
+      }
+    } catch (err) {
+      errorMessage = toUserErrorMessage(err);
+      if (gen === pauseGeneration) pauseState = await loadPauseState();
+    }
+  }
+  async function handleResume() {
+    pauseGeneration += 1;
+    pauseState = null; // optimistic
+    try {
+      await sendRuntimeMessage('setPaused', { paused: false });
+      await refreshView();
+    } catch (err) {
+      errorMessage = toUserErrorMessage(err);
+      pauseState = await loadPauseState();
+    }
+  }
+
+  // Tick the shared clock so time-based labels (pause countdown, mute expiry)
+  // update, and a lapsed timed pause flips back to "live" (the background
+  // auto-resumes on its own).
+  $effect(() => {
+    const timer = setInterval(() => {
+      nowMS = Date.now();
+      if (pauseState && pauseState.until !== null && pauseState.until <= nowMS) {
+        pauseState = null;
+        refreshView();
+      }
+    }, 30_000);
+    return () => clearInterval(timer);
+  });
+
   async function setPriorityFiltersRemote(filters: PriorityFilter[]): Promise<PriorityFilter[]> {
     const response = await sendRuntimeMessage('setPriorityFilters', { filters });
     return Array.isArray(response.filters) ? response.filters : filters;
@@ -314,16 +433,18 @@
   }
 
   async function getDashboardData(liveLimit = 50, eventsLimit = 25, submissionsLimit = 100) {
-    const [refreshState, studiesList, eventsList, submissionsList, analyticsList, researcherList] = await Promise.all([
+    const [refreshState, studiesList, eventsList, submissionsList, analyticsList, researcherList, muteList, pause] = await Promise.all([
       store.getStudiesRefresh(),
       store.getCurrentAvailableStudies(liveLimit),
       store.getRecentAvailabilityEvents(eventsLimit),
       store.getCurrentSubmissions(submissionsLimit, 'all'),
       store.getSubmissionsForAnalytics(),
       store.listKnownResearchers(),
+      loadMutes(),
+      loadPauseState(),
     ]);
     const researchers = store.annotateResearcherCounts(researcherList, studiesList, analyticsList);
-    return { refreshState, studies: studiesList, events: eventsList, submissions: submissionsList, analyticsSubmissions: analyticsList, researchers };
+    return { refreshState, studies: studiesList, events: eventsList, submissions: submissionsList, analyticsSubmissions: analyticsList, researchers, mutes: muteList, pause };
   }
 
   async function loadStudyTypeMap() {
@@ -371,13 +492,18 @@
 
   async function refreshSettings() {
     try {
-      const [settings, filters, tgResponse, prefs] = await Promise.all([
+      const [settings, filters, tgResponse, prefs, submissionBehavior, pause] = await Promise.all([
         getSettings(),
         loadPriorityFilters(),
         sendRuntimeMessage('getTelegramSettings').catch(() => null),
         loadEarningsPrefs(),
+        browser.storage.local.get(AUTO_OPEN_DURING_SUBMISSION_KEY),
+        loadPauseState(),
       ]);
+      if (pauseGeneration === 0) pauseState = pause;
       autoOpenEnabled = settings.auto_open_prolific_tab !== false;
+      autoOpenDuringSubmission =
+        submissionBehavior[AUTO_OPEN_DURING_SUBMISSION_KEY] === 'skip' ? 'skip' : DEFAULT_AUTO_OPEN_DURING_SUBMISSION;
       priorityFilters = filters;
       earningsPrefs = prefs;
       if (tgResponse?.settings) {
@@ -402,6 +528,8 @@
     }
     isRefreshingView = true;
     reactiveRefreshPending = false;
+    const muteGenAtStart = muteGeneration;
+    const pauseGenAtStart = pauseGeneration;
 
     try {
       const [stateResult, dashboardResult] = await Promise.allSettled([
@@ -442,6 +570,21 @@
         if (!jsonEqual(knownResearchers, newResearchers)) knownResearchers = newResearchers;
       }
 
+      // Only mirror the dashboard's mute list when the read succeeded (a failed
+      // read must not wipe active mutes) and no mute add/remove landed while this
+      // refresh was in flight (that fresher write wins).
+      if (dashboard && muteGeneration === muteGenAtStart) {
+        const newMutes = dashboard.mutes ?? [];
+        if (!jsonEqual(mutes, newMutes)) mutes = newMutes;
+      }
+
+      // Reflect the pause flag (incl. background auto-resume), unless the user
+      // toggled it mid-refresh (that fresher intent wins).
+      if (dashboard && pauseGeneration === pauseGenAtStart) {
+        const newPause = dashboard.pause ?? null;
+        if (!jsonEqual(pauseState, newPause)) pauseState = newPause;
+      }
+
       let firstErrorMessage = '';
       if (stateResult.status === 'rejected') {
         firstErrorMessage = toUserErrorMessage((stateResult as PromiseRejectedResult).reason);
@@ -471,6 +614,21 @@
       errorMessage = err instanceof Error ? err.message : String(err);
       await refreshSettings();
     }
+  }
+
+  async function handleAutoOpenDuringSubmissionChange(behavior: AutoOpenDuringSubmission) {
+    const previous = autoOpenDuringSubmission;
+    autoOpenDuringSubmission = behavior; // optimistic
+    try {
+      await sendRuntimeMessage('setAutoOpenDuringSubmission', { behavior });
+    } catch (err) {
+      autoOpenDuringSubmission = previous;
+      errorMessage = toUserErrorMessage(err);
+    }
+  }
+
+  function handleRemoveMute(scope: MuteScope, id: string) {
+    removeMute(scope, id);
   }
 
   async function persistPriorityFiltersIfNeeded() {
@@ -760,6 +918,10 @@
     {refreshPrefix}
     {darkMode}
     onToggleDarkMode={toggleDarkMode}
+    paused={isPaused}
+    {pauseRemaining}
+    onPause={handlePause}
+    onResume={handleResume}
   />
 
   <TabBar {activeTab} onTabChange={handleTabChange} />
@@ -780,6 +942,12 @@
     onCopyLink={copyStudyLink}
     onSendStudyToTelegram={sendStudyToTelegram}
     onViewResearcher={handleViewResearcher}
+    {mutes}
+    {nowMS}
+    onMuteStudy={muteStudy}
+    onMuteResearcher={muteResearcher}
+    onUnmuteStudy={unmuteStudy}
+    onUnmuteResearcher={unmuteResearcher}
   />
   <FeedPanel
     active={activeTab === 'feed'}
@@ -832,6 +1000,13 @@
   <SettingsPanel
     active={activeTab === 'settings'}
     {autoOpenEnabled}
+    {autoOpenDuringSubmission}
+    {mutes}
+    {nowMS}
+    paused={isPaused}
+    {pauseRemaining}
+    onPause={handlePause}
+    onResume={handleResume}
     bind:priorityFilters
     liveStudies={studies}
     {telegramSettings}
@@ -844,6 +1019,8 @@
     {researcherProfiles}
     {focusFilterId}
     onAutoOpenChange={handleAutoOpenChange}
+    onAutoOpenDuringSubmissionChange={handleAutoOpenDuringSubmissionChange}
+    onRemoveMute={handleRemoveMute}
     onPriorityFiltersChange={handlePriorityFiltersChange}
     onTelegramSettingsChange={handleTelegramSettingsChange}
     onTelegramTest={handleTelegramTest}

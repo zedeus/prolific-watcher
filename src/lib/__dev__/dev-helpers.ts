@@ -1,5 +1,5 @@
 import { seedFakeSubmissions, clearFakeSubmissions } from './fake-submissions';
-import { seedFakeStudies, seedSparseStudies, clearFakeStudies, wipeStudyData, seedSyncState } from './fake-studies';
+import { seedFakeStudies, seedSparseStudies, clearFakeStudies, wipeStudyData, seedSyncState, seedMutes, clearMutes } from './fake-studies';
 
 declare global {
   interface Window {
@@ -11,6 +11,8 @@ declare global {
       clearStudies: () => Promise<void>;
       wipeStudyData: () => Promise<void>;
       seedSyncState: (patch?: Record<string, unknown>) => Promise<void>;
+      seedMutes: () => Promise<number>;
+      clearMutes: () => Promise<void>;
     };
   }
 }
@@ -25,5 +27,7 @@ export function attachDevHelpers(): void {
     clearStudies: clearFakeStudies,
     wipeStudyData,
     seedSyncState,
+    seedMutes,
+    clearMutes,
   };
 }

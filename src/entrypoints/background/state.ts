@@ -34,6 +34,7 @@ export interface PriorityState {
   markAlertSeen: (studies: Study[], seenAtMS?: number) => void;
   selectAutoOpenCandidates: (studies: Study[], nowMS?: number) => Study[];
   markAutoOpenSeen: (studies: Study[], seenAtMS?: number) => void;
+  clearAutoOpenSeen: (studies: Study[]) => void;
   selectTelegramCandidates: (studies: Study[], nowMS?: number) => Study[];
   markTelegramSeen: (studies: Study[], seenAtMS?: number) => void;
   selectDesktopNotifyCandidates: (studies: Study[], nowMS?: number) => Study[];
@@ -183,6 +184,13 @@ export function createPriorityState(options: CreatePriorityStateOptions): Priori
     return selected;
   }
 
+  function clearActionStudiesSeen(studies: Study[], seenStudyIDs: Map<string, number>): void {
+    for (const study of studies) {
+      const studyID = study && typeof study.id === 'string' ? study.id.trim() : '';
+      if (studyID) seenStudyIDs.delete(studyID);
+    }
+  }
+
   function markActionStudiesSeen(studies: Study[], seenStudyIDs: Map<string, number>, seenAtMS: number = Date.now(), ttlMS?: number): void {
     for (const study of studies) {
       const studyID = study && typeof study.id === 'string' ? study.id.trim() : '';
@@ -236,6 +244,7 @@ export function createPriorityState(options: CreatePriorityStateOptions): Priori
     markAlertSeen: (studies: Study[], seenAtMS?: number): void => markActionStudiesSeen(studies, alertSeenStudyIDs, seenAtMS),
     selectAutoOpenCandidates: (studies: Study[], nowMS?: number): Study[] => selectActionStudies(studies, autoOpenSeenStudyIDs, nowMS),
     markAutoOpenSeen: (studies: Study[], seenAtMS?: number): void => markActionStudiesSeen(studies, autoOpenSeenStudyIDs, seenAtMS),
+    clearAutoOpenSeen: (studies: Study[]): void => clearActionStudiesSeen(studies, autoOpenSeenStudyIDs),
     selectTelegramCandidates: (studies: Study[], nowMS?: number): Study[] => selectActionStudies(studies, telegramSeenStudyIDs, nowMS, limits.telegramSeenTTLMS),
     markTelegramSeen: (studies: Study[], seenAtMS?: number): void => markActionStudiesSeen(studies, telegramSeenStudyIDs, seenAtMS, limits.telegramSeenTTLMS),
     selectDesktopNotifyCandidates: (studies: Study[], nowMS?: number): Study[] => selectActionStudies(studies, desktopNotifySeenStudyIDs, nowMS),

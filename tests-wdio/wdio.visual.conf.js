@@ -31,10 +31,13 @@ export const config = {
     path.resolve('./specs/visual-earnings.js'),
     path.resolve('./specs/visual-earnings-popup.js'),
     path.resolve('./specs/visual-live.js'),
+    path.resolve('./specs/visual-mutes.js'),
     path.resolve('./specs/visual-researcher.js'),
     path.resolve('./specs/visual-insights.js'),
     path.resolve('./specs/11-earnings-assertions.js'),
     path.resolve('./specs/12-resilience-status.js'),
+    path.resolve('./specs/13-mutes-assertions.js'),
+    path.resolve('./specs/14-pause-assertions.js'),
   ],
 
   capabilities: [{

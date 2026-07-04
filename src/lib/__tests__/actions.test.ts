@@ -3,17 +3,18 @@ import { createPriorityActions } from '../../entrypoints/background/actions';
 import { createDefaultPriorityFilter } from '../priority-filter';
 import type { Study, PriorityFilter } from '../types';
 
-const { notificationsCreate, runtimeGetURL } = vi.hoisted(() => ({
+const { notificationsCreate, runtimeGetURL, tabsCreate } = vi.hoisted(() => ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   notificationsCreate: vi.fn(async () => 'notification-id') as any,
   runtimeGetURL: vi.fn((path: string) => `moz-extension://fake/${path}`),
+  tabsCreate: vi.fn(async (_opts: { url: string; active: boolean }) => ({ id: 1 })),
 }));
 
 vi.mock('wxt/browser', () => ({
   browser: {
     notifications: { create: notificationsCreate },
     runtime: { getURL: (path: string) => runtimeGetURL(path) },
-    tabs: { create: vi.fn(async () => ({ id: 1 })) },
+    tabs: { create: tabsCreate },
   },
 }));
 
@@ -58,7 +59,9 @@ function makeFilter(overrides: Partial<PriorityFilter> = {}): PriorityFilter {
   return createDefaultPriorityFilter(overrides);
 }
 
-function createTestActions() {
+function createTestActions(
+  overrides: Partial<Parameters<typeof createPriorityActions>[0]> = {},
+) {
   const debugLogs: Array<{ event: string; details?: Record<string, unknown> }> = [];
   const counters: Record<string, number> = {};
   const stateUpdates: Record<string, unknown>[] = [];
@@ -76,6 +79,7 @@ function createTestActions() {
       minAlertSoundVolume: 0,
       defaultAlertSoundVolume: 100,
     },
+    ...overrides,
   });
 
   return { actions, debugLogs, counters, stateUpdates };
@@ -192,5 +196,96 @@ describe('handleDesktopNotifyAction', () => {
     expect(ids[0]).toContain('filter-A');
     expect(ids[1]).toContain('filter-B');
     expect(ids[0]).not.toBe(ids[1]);
+  });
+});
+
+describe('handleAutoOpenAction — focus mode (issue #21)', () => {
+  beforeEach(() => {
+    tabsCreate.mockClear();
+  });
+
+  it('focuses the first tab normally when no focus-mode resolver is provided', async () => {
+    const { actions } = createTestActions();
+    const filter = makeFilter({ auto_open_in_new_tab: true });
+    const studies = [makeStudy({ id: 's-1' }), makeStudy({ id: 's-2' })];
+
+    await actions.handleAutoOpenAction(filter, studies, 'test');
+
+    expect(tabsCreate).toHaveBeenCalledTimes(2);
+    expect((tabsCreate.mock.calls[0][0] as { active: boolean }).active).toBe(true);
+    expect((tabsCreate.mock.calls[1][0] as { active: boolean }).active).toBe(false);
+  });
+
+  it('focuses normally when the resolver reports "focus"', async () => {
+    const { actions } = createTestActions({ resolveAutoOpenFocusMode: async () => 'focus' });
+    const filter = makeFilter({ auto_open_in_new_tab: true });
+
+    await actions.handleAutoOpenAction(filter, [makeStudy({ id: 's-1' })], 'test');
+
+    expect(tabsCreate).toHaveBeenCalledOnce();
+    expect((tabsCreate.mock.calls[0][0] as { active: boolean }).active).toBe(true);
+  });
+
+  it('opens every tab in the background when a submission is in progress', async () => {
+    const { actions, counters } = createTestActions({ resolveAutoOpenFocusMode: async () => 'background' });
+    const filter = makeFilter({ auto_open_in_new_tab: true });
+    const studies = [makeStudy({ id: 's-1' }), makeStudy({ id: 's-2' })];
+
+    await actions.handleAutoOpenAction(filter, studies, 'test');
+
+    expect(tabsCreate).toHaveBeenCalledTimes(2);
+    expect((tabsCreate.mock.calls[0][0] as { active: boolean }).active).toBe(false);
+    expect((tabsCreate.mock.calls[1][0] as { active: boolean }).active).toBe(false);
+    // Still records the opens.
+    expect(counters.priority_study_auto_open_count).toBe(2);
+  });
+
+  it('skips opening entirely when focus mode is "skip" and reports suppression', async () => {
+    const { actions, debugLogs, counters } = createTestActions({ resolveAutoOpenFocusMode: async () => 'skip' });
+    const filter = makeFilter({ auto_open_in_new_tab: true });
+
+    // Returns true so the caller does NOT mark these studies auto-open-seen —
+    // the opportunity must survive until the submission finishes.
+    const suppressed = await actions.handleAutoOpenAction(filter, [makeStudy({ id: 's-1' })], 'test');
+
+    expect(suppressed).toBe(true);
+    expect(tabsCreate).not.toHaveBeenCalled();
+    expect(counters.priority_study_auto_open_count).toBeUndefined();
+    expect(debugLogs.some((l) => l.event === 'tab.priority_auto_open.skipped_submission_in_progress')).toBe(true);
+  });
+
+  it('returns false (not suppressed) when it opens in the background', async () => {
+    const { actions } = createTestActions({ resolveAutoOpenFocusMode: async () => 'background' });
+    const filter = makeFilter({ auto_open_in_new_tab: true });
+
+    const suppressed = await actions.handleAutoOpenAction(filter, [makeStudy({ id: 's-1' })], 'test');
+
+    expect(suppressed).toBe(false);
+    expect(tabsCreate).toHaveBeenCalledOnce();
+  });
+
+  it('does not consult the resolver when auto-open is disabled for the filter', async () => {
+    const resolver = vi.fn(async () => 'skip' as const);
+    const { actions } = createTestActions({ resolveAutoOpenFocusMode: resolver });
+    const filter = makeFilter({ auto_open_in_new_tab: false });
+
+    await actions.handleAutoOpenAction(filter, [makeStudy({ id: 's-1' })], 'test');
+
+    expect(resolver).not.toHaveBeenCalled();
+    expect(tabsCreate).not.toHaveBeenCalled();
+  });
+
+  it('degrades to normal focus when the resolver throws', async () => {
+    const { actions, debugLogs } = createTestActions({
+      resolveAutoOpenFocusMode: async () => { throw new Error('db boom'); },
+    });
+    const filter = makeFilter({ auto_open_in_new_tab: true });
+
+    await actions.handleAutoOpenAction(filter, [makeStudy({ id: 's-1' })], 'test');
+
+    // Still opens + focuses despite the resolver failing.
+    expect(tabsCreate).toHaveBeenCalledOnce();
+    expect((tabsCreate.mock.calls[0][0] as { active: boolean }).active).toBe(true);
+    expect(debugLogs.some((l) => l.event === 'tab.priority_auto_open.focus_mode_error')).toBe(true);
   });
 });

@@ -879,3 +879,100 @@ describe('pruneStudyHistoryToRowCap', () => {
     expect(await store.pruneStudyHistoryToRowCap(100)).toBe(0);
   });
 });
+
+// --- findInProgressSubmission (issue #21) ---
+
+describe('findInProgressSubmission', () => {
+  const WINDOW = 30 * 60 * 1000; // 30 min
+  const NOW = Date.parse('2026-07-04T12:00:00Z');
+
+  async function addRaw(id: string, phase: 'submitting' | 'submitted', observedAtMS: number, status = 'ACTIVE') {
+    await db.submissions.add({
+      submission_id: id,
+      study_id: `study-${id}`,
+      study_name: `Study ${id}`,
+      participant_id: 'p1',
+      status,
+      phase,
+      payload: {},
+      observed_at: new Date(observedAtMS).toISOString(),
+      updated_at: new Date(NOW).toISOString(), // always "now" — must be ignored
+    });
+  }
+
+  it('returns null when there are no submissions', async () => {
+    expect(await store.findInProgressSubmission(WINDOW, NOW)).toBeNull();
+  });
+
+  it('returns null when only submitted rows exist', async () => {
+    await addRaw('a', 'submitted', NOW - 1000, 'APPROVED');
+    expect(await store.findInProgressSubmission(WINDOW, NOW)).toBeNull();
+  });
+
+  it('finds a fresh in-progress submission', async () => {
+    await addRaw('a', 'submitting', NOW - 5 * 60 * 1000, 'ACTIVE');
+    const found = await store.findInProgressSubmission(WINDOW, NOW);
+    expect(found?.submission_id).toBe('a');
+  });
+
+  it('ignores a stale reservation past the freshness window (does not suppress forever)', async () => {
+    await addRaw('stale', 'submitting', NOW - 45 * 60 * 1000, 'RESERVED');
+    expect(await store.findInProgressSubmission(WINDOW, NOW)).toBeNull();
+  });
+
+  it('does not treat a freshly-rewritten updated_at as an observation', async () => {
+    // observed 45 min ago but updated_at is "now" — must still be considered stale.
+    await addRaw('stale', 'submitting', NOW - 45 * 60 * 1000, 'RESERVED');
+    expect(await store.findInProgressSubmission(WINDOW, NOW)).toBeNull();
+  });
+
+  it('picks the most-recently-observed of several in-progress rows', async () => {
+    await addRaw('older', 'submitting', NOW - 20 * 60 * 1000);
+    await addRaw('newer', 'submitting', NOW - 2 * 60 * 1000);
+    const found = await store.findInProgressSubmission(WINDOW, NOW);
+    expect(found?.submission_id).toBe('newer');
+  });
+
+  it('treats the window edge as fresh (>= cutoff)', async () => {
+    await addRaw('edge', 'submitting', NOW - WINDOW);
+    expect((await store.findInProgressSubmission(WINDOW, NOW))?.submission_id).toBe('edge');
+  });
+
+  it('reflects the observed_at written by upsertSubmission for a RESERVED submission', async () => {
+    const observedAt = new Date(NOW - 60 * 1000).toISOString();
+    await store.upsertSubmission(makeSnapshot('live', 'RESERVED'), observedAt);
+    const found = await store.findInProgressSubmission(WINDOW, NOW);
+    expect(found?.submission_id).toBe('live');
+    expect(found?.phase).toBe('submitting');
+  });
+
+  it('falls back to updated_at when observed_at is unparseable', async () => {
+    await db.submissions.add({
+      submission_id: 'weird',
+      study_id: 's',
+      study_name: 'S',
+      participant_id: 'p1',
+      status: 'ACTIVE',
+      phase: 'submitting',
+      payload: {},
+      observed_at: 'not-a-date',
+      updated_at: new Date(NOW - 60 * 1000).toISOString(),
+    });
+    expect((await store.findInProgressSubmission(WINDOW, NOW))?.submission_id).toBe('weird');
+  });
+
+  it('ignores a row whose timestamps are both unparseable', async () => {
+    await db.submissions.add({
+      submission_id: 'broken',
+      study_id: 's',
+      study_name: 'S',
+      participant_id: 'p1',
+      status: 'RESERVED',
+      phase: 'submitting',
+      payload: {},
+      observed_at: '',
+      updated_at: 'garbage',
+    });
+    expect(await store.findInProgressSubmission(WINDOW, NOW)).toBeNull();
+  });
+});

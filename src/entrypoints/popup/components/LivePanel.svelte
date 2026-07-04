@@ -23,6 +23,7 @@
   } from '../../background/domain';
   import StudyActionMenu from './StudyActionMenu.svelte';
   import StudyTitle from './StudyTitle.svelte';
+  import { isTargetMuted, type MuteEntry, type MuteDuration } from '../../../lib/mutes';
 
   let {
     active,
@@ -38,6 +39,12 @@
     onSendStudyToTelegram,
     onViewResearcher,
     researcherProfiles,
+    mutes = [],
+    nowMS = Date.now(),
+    onMuteStudy,
+    onMuteResearcher,
+    onUnmuteStudy,
+    onUnmuteResearcher,
   } = $props<{
     active: boolean;
     studies: Study[];
@@ -52,7 +59,21 @@
     onCopyLink: (url: string) => void;
     onSendStudyToTelegram: (study: Study) => void;
     onViewResearcher?: (researcherId: string, researcherName: string) => void;
+    mutes?: MuteEntry[];
+    /** Shared coarse clock (ms) from App so mute badges lapse without a per-panel timer. */
+    nowMS?: number;
+    onMuteStudy?: (study: Study, duration: MuteDuration) => void;
+    onMuteResearcher?: (study: Study, duration: MuteDuration) => void;
+    onUnmuteStudy?: (study: Study) => void;
+    onUnmuteResearcher?: (study: Study) => void;
   }>();
+
+  function studyDirectlyMuted(study: Study): boolean {
+    return isTargetMuted('study', study?.id?.trim() || '', mutes, nowMS);
+  }
+  function researcherMutedNow(study: Study): boolean {
+    return isTargetMuted('researcher', study?.researcher?.id?.trim() || '', mutes, nowMS);
+  }
 
   type SortKey = 'newest' | 'reward' | 'hourly' | 'places' | 'duration' | 'reliability';
 
@@ -296,6 +317,9 @@
         {@const studyTypeLabel = formatStudyLabel(study.study_labels, study.ai_inferred_study_labels)}
 
         {@const researcherName = study.researcher?.name?.trim() || ''}
+        {@const researcherMuted = researcherMutedNow(study)}
+        {@const studyMuted = studyDirectlyMuted(study)}
+        {@const muted = studyMuted || researcherMuted}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
           <a
             class="event-link block no-underline text-inherit rounded-lg outline-none"
@@ -328,6 +352,12 @@
                     onCopyLink={() => onCopyLink(url)}
                     onSendTelegram={() => onSendStudyToTelegram(study)}
                     onViewProfile={onViewResearcher}
+                    {studyMuted}
+                    {researcherMuted}
+                    onMuteStudy={(duration) => onMuteStudy?.(study, duration)}
+                    onMuteResearcher={(duration) => onMuteResearcher?.(study, duration)}
+                    onUnmuteStudy={() => onUnmuteStudy?.(study)}
+                    onUnmuteResearcher={() => onUnmuteResearcher?.(study)}
                   />
                 </div>
               </div>
@@ -343,6 +373,12 @@
                 {/if}
                 {#if isPriority}
                   <span class="ml-0.5 text-[9px] font-semibold uppercase tracking-wider px-1.5 py-[1px] rounded bg-purple-700 text-purple-100 dark:bg-purple-500 dark:text-white">priority</span>
+                {/if}
+                {#if muted}
+                  <span
+                    class="ml-0.5 text-[9px] font-semibold uppercase tracking-wider px-1.5 py-[1px] rounded bg-base-300 text-base-content/60 inline-flex items-center gap-0.5"
+                    title={researcherMuted ? 'Muted — this researcher is snoozed' : 'Muted — no alerts or auto-open'}
+                  >&#128277; muted</span>
                 {/if}
               </div>
             </div>
