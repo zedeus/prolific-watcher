@@ -1,0 +1,58 @@
+src/entrypoints/background/state.ts
+  s_a5772103a06c57::t_87b8ea7db035bc 64
+  s_a5772103a06c57::t_230b621a4aac97 241-242
+  s_a5772103a06c57::t_3178f33a3fa6db 249
+  s_a5772103a06c57::t_e03f6fac7be91e 39-40
+  s_a5772103a06c57::t_566f5669732131 221
+src/lib/constants.ts
+  s_a5772103a06c57::t_1b39d6b8d91af5 78-80
+src/lib/types.ts
+  s_a5772103a06c57::t_ec7385a3ec7b44 211
+  s_a5772103a06c57::t_9f6018086ecf00 93-96
+src/entrypoints/background/index.ts
+  s_a5772103a06c57::t_e90ef40f50b368 1475
+  s_a5772103a06c57::t_116377ab365755 1390-1391
+  s_a5772103a06c57::t_5a2299153da84c 1385,1387,1389
+  s_a5772103a06c57::t_7fbb9b478e4dda 75-76
+  s_a5772103a06c57::t_54bc85fb53f78a 96
+  s_a5772103a06c57::t_d28176752e1242 178-179
+  s_a5772103a06c57::t_9fafb658397ebf 1386,1388
+  s_a5772103a06c57::t_42b83eea291d80 1468-1471
+src/entrypoints/popup/components/SettingsPanel.svelte
+  s_a5772103a06c57::t_c820d30c94bdbb 437,439
+  s_a5772103a06c57::t_3c628a9c48478f 1001-1039
+src/entrypoints/background/settings.ts
+  s_a5772103a06c57::t_ff8d9f47eae1ff 127,129-130,140-143
+  s_a5772103a06c57::t_d9c8703b2a9308 125-126,128
+  s_a5772103a06c57::t_7ae8eb2db49bfc 44-45
+src/entrypoints/background/actions.ts
+  s_a5772103a06c57::t_11a25137c0b341 32
+  s_a5772103a06c57::t_9542ddf203470d 298
+  s_a5772103a06c57::t_8372ca8ed846c9 302
+  s_a5772103a06c57::t_087f01be4f87f5 296
+  s_a5772103a06c57::t_78eb0b8f639d96 282-295,297,299-301,303-308,312
+src/wxt.config.ts
+  s_a5772103a06c57::t_8eb2e1156e4ee7 25
+.gitignore
+  s_a5772103a06c57::t_729cd77b9d540e 1-3
+src/lib/priority-filter.ts
+  s_a5772103a06c57::t_3731024e2be650 5-6,23-26,38-66
+src/entrypoints/popup/App.svelte
+  s_a5772103a06c57::t_4f0839d82cb7f3 272-274
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4a5fac35adbcbcdf4be8ec01cfdf47aa96aeb424",
+  "prompts": {},
+  "sessions": {
+    "s_a5772103a06c57": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1030b83a-f832-4019-a425-60324315551c",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Zed <zedeus@pm.me>"
+    }
+  }
+}
